@@ -5,6 +5,7 @@ namespace opnmml {
 
 Mixer::Mixer(int r) : rate(r), spm256((r << 8) / 1000), opx(r, 4000000) {
     opx.setMode(0);
+    opx.setOutputGain(kFmOutputGain);
     for (int i = 0; i < 4; i++) seq[i] = new Sequencer(&opx);
 }
 Mixer::~Mixer() { for (int i = 0; i < 4; i++) delete seq[i]; }

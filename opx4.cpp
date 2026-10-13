@@ -4,6 +4,7 @@
 #include <cstring>
 
 namespace opnmml {
+
 namespace {
 
 // ---- noise / LFO random table (word_10035A60), sub_1001A490 ----
@@ -20,11 +21,11 @@ void initNoise() {
 }
 
 // rate-table block: the decompile addresses it as dword_1002FA30[x] / FB80 / FC30 / FC80 / FCC0
-inline int FA30(int i) { return kR2FB80[i]; }
-inline int FB80(int i) { return kR2FB80[84 + i]; }
-inline int FC30(int i) { return kR2FB80[128 + i]; }
-inline int FC80(int i) { return kR2FB80[148 + i]; }
-inline int FCC0(int i) { return kR2FB80[164 + i]; }
+inline int FA30(int i) { return kR2FA30[i]; }
+inline int FB80(int i) { return kR2FA30[84 + i]; }
+inline int FC30(int i) { return kR2FA30[128 + i]; }
+inline int FC80(int i) { return kR2FA30[148 + i]; }
+inline int FCC0(int i) { return kR2FA30[164 + i]; }
 
 inline int32_t mul32(int32_t a, int32_t b) { return (int32_t)((uint32_t)a * (uint32_t)b); }
 inline int32_t add32(int32_t a, int32_t b) { return (int32_t)((uint32_t)a + (uint32_t)b); }

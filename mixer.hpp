@@ -6,6 +6,11 @@
 
 namespace opnmml {
 
+// EMPIRICAL CALIBRATION (not in the decompile): wuopn.cpp initialises the chip's output gain D(4) to 1024, but recordings
+// of the original plugin (PC-88 and X1 files, 25-28 s each) fit an FM level 1.93-1.98x higher with PSG unchanged (R^2 ~ 0.98).
+// A final FM gain of 2048 reproduces them (rms ratio 1.004, spread 0.011).  Set to 1024 for the value as decompiled.
+static const int kFmOutputGain = 2048;
+
 class Mixer {
 public:
     explicit Mixer(int rate = 44100);                // sub_10023150 (chip clock is fixed at 4 MHz)

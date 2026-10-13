@@ -21,15 +21,17 @@ static void put16(FILE* f, uint16_t v) { fputc(v & 255, f); fputc((v >> 8) & 255
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: mmlplay in.mus out.wav [seconds=60] [-d PC88|X1|MZ] [-v volume=32] [-m mutemask=0] [-r rate=44100] [-s noiseSeed]\n");
+        fprintf(stderr, "usage: mmlplay in.mus out.wav [seconds=60] [-d PC88|X1|MZ] [-v volume=32] [-m mutemask=0] [-r rate=44100] [-s noiseSeed] [-g chipGain=2048 (1024 = value in the decompile)] [-o defaultTotalOffset=8]\n");
         return 2;
     }
-    double seconds = 60; int rate = 44100, vol = 32; unsigned mute = 0; int dev = -1; bool seed = false; uint32_t sd = 1;
+    int chipGain = 0; double seconds = 60; int rate = 44100, vol = 32; unsigned mute = 0; int dev = -1; bool seed = false; uint32_t sd = 1;
     for (int i = 3; i < argc; i++) {
         if (!strcmp(argv[i], "-d") && i + 1 < argc) { std::string s = argv[++i]; dev = (s == "X1") ? 5 : (s == "MZ") ? 6 : 4; }
         else if (!strcmp(argv[i], "-v") && i + 1 < argc) vol = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-m") && i + 1 < argc) mute = (unsigned)strtoul(argv[++i], nullptr, 0);
         else if (!strcmp(argv[i], "-r") && i + 1 < argc) rate = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-g") && i + 1 < argc) chipGain = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "-o") && i + 1 < argc) Song::defaultTotalOffset = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-s") && i + 1 < argc) { seed = true; sd = (uint32_t)strtoul(argv[++i], nullptr, 0); }
         else seconds = atof(argv[i]);
     }
@@ -41,6 +43,7 @@ int main(int argc, char** argv) {
     Mixer mx(rate);
     if (dev < 0) dev = (song.machine == M_X1) ? 5 : (song.machine == M_MZ) ? 6 : 4;
     mx.setDevice(dev);
+    if (chipGain) mx.chip().setOutputGain(chipGain);
     mx.setVolume(vol);
     mx.setMute(mute);
     mx.play(3, &song);

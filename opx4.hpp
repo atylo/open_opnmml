@@ -33,6 +33,7 @@ public:
 
     // seed of the noise/LFO table (the original fills it with the C runtime's rand(); see opx4.cpp)
     static void setNoiseSeed(uint32_t seed);
+    void setOutputGain(int g) { d[4] = g; }      // test hook: D(4), 1024 in the DLL
 
 private:
     std::vector<int32_t> d;

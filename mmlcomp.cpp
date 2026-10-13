@@ -705,6 +705,8 @@ struct Comp {
 
 }  // namespace
 
+int Song::defaultTotalOffset = 8;
+
 bool compile(const char* text, Song& out) {
     out = Song();
     Comp c(out);

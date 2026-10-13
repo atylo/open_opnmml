@@ -38,7 +38,8 @@ struct Song {
     std::string title;
     int  machine     = M_PC88;
     bool x1Mode      = false;   // this+18468 : 11 channels A-K, 11-value operators
-    int  totalOffset = 8;       // this+16736 : "#total_offset n" stores n+8
+    static int defaultTotalOffset;   // value of this+16736 when no #total_offset is given (the DLL sets 8)
+    int  totalOffset = defaultTotalOffset;       // this+16736 : "#total_offset n" stores n+8
     Tone     tones[128];
     bool     toneDefined[128] = {false};
     Envelope envs[64];
