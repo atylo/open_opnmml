@@ -1,6 +1,15 @@
-// Chip tables for the wuopn COpx4 port.  Source: wuopn.dll .rdata dump (cross-checked against the Hex-Rays initialisers).
-// kBlob is the contiguous .rdata range 0x1002A8E0-0x1002D9B0, so out-of-range reads see the neighbouring table as in the DLL.
-static const int kBlob[3124] = {
+// ============================================================================================================
+// Lookup tables of the wuopn.dll sound chip (COpx4).  Generated from the DLL's .rdata; every value was cross-checked
+// against the initialisers in the Hex-Rays output wherever those exist.  Included by opx4.cpp only.
+//
+// "DLL address" notes give the original symbol so any table can be re-checked against the binary.
+// ============================================================================================================
+
+// ---- Raw storage ---------------------------------------------------------------------------------------------
+// The DLL keeps these tables back to back in .rdata (0x1002A8E0 - 0x1002D9B0).  They are stored here as ONE
+// contiguous array so that an index running past the end of one table reads the neighbouring table, exactly like
+// the DLL does.  Always read them through rodata() in opx4.cpp, which also refuses to read outside this array.
+static const int kChipRodata[3124] = {
   0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1,
   2, 2, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5,
   5, 6, 6, 7, 8, 8, 9, 10, 11, 12, 13, 14,
@@ -263,23 +272,52 @@ static const int kBlob[3124] = {
   1165, 1169, 1174, 1178, 1182, 1186, 1191, 1195, 1199, 1204, 1208, 1212,
   1217, 1221, 1226, 1230,
 };
-#define kLinTab (kBlob + 0)   /* 0x1002A8E0 */
-#define kDtTab (kBlob + 120)   /* 0x1002AAC0 */
-#define kLfoShift (kBlob + 128)   /* 0x1002AAE0 */
-#define kFnumBlkBase (kBlob + 132)   /* 0x1002AAF0 */
-#define kTab_AB70 (kBlob + 164)   /* 0x1002AB70 */
-#define kTab_AB90 (kBlob + 172)   /* 0x1002AB90 */
-#define kTab_ABB0 (kBlob + 180)   /* 0x1002ABB0 */
-#define kEnvRateOPN (kBlob + 280)   /* 0x1002AD40 */
-#define kTab_AEC0 (kBlob + 376)   /* 0x1002AEC0 */
-#define kTab_AEE0 (kBlob + 384)   /* 0x1002AEE0 */
-#define kEnvRateOPM (kBlob + 960)   /* 0x1002B7E0 */
-#define kExpTab (kBlob + 1520)   /* 0x1002C0A0 */
-#define kTab_D620 (kBlob + 2896)   /* 0x1002D620 */
-#define kFnumBlk ((const unsigned char*)kFnumBlkBase)
 
-// Slice of .rdata at 0x1002FA30 (decompile bases dword_1002FA30/FB80/FC30/FC80/FCC0 = indices 0/84/128/148/164)
-static const int kR2FA30[176] = {
+// ---- Named views into kChipRodata ------------------------------------------------------------------------------
+// Frequency / detune tables (shared by OPN and OPM) ---------------------------------------------------------------
+
+// Detune offset added to a channel's frequency, indexed by (kDetuneBaseIndex[DT1] + key code).  Values 0..22.
+//   120 entries.  DLL address 0x1002A8E0 (dword_1002A8E0).
+static const int* const kDetuneOffsetByKeyCode = kChipRodata + 0;
+// Start index into kDetuneOffsetByKeyCode for each of the 8 DT1 settings (register field DT1, bits 4-6 of 0x30+).
+//   8 entries.  DLL address 0x1002AAC0 (dword_1002AAC0).
+static const int* const kDetuneBaseIndex = kChipRodata + 120;
+// OPM only: extra index added to the frequency table for each DT2 setting (0, 384, 500, 608).
+//   4 entries.  DLL address 0x1002AAE0 (dword_1002AAE0).
+static const int* const kDt2IndexOffset = kChipRodata + 128;
+// OPN only: maps the top 7 bits of (block, F-number) to a 5-bit key code, which drives key scaling (KS).
+//   128 bytes.  DLL address 0x1002AAF0 (byte_1002AAF0).
+static const unsigned char* const kKeyCodeFromFnum = reinterpret_cast<const unsigned char*>(kChipRodata + 132);
+
+// LFO depth tables -------------------------------------------------------------------------------------------------
+// Vibrato (PMS) depth for OPN register 0xB4 bits 0-2.   8 entries.  DLL address 0x1002AB70.
+static const int* const kOpnPmsDepth = kChipRodata + 164;
+// Vibrato (PMS) depth for OPM register 0x38 bits 4-6.   8 entries.  DLL address 0x1002AB90.
+static const int* const kOpmPmsDepth = kChipRodata + 172;
+// Tremolo (AMS) depth for OPN register 0xB4 bits 4-5 (0, 15, 63, 126); only 4 of the 100 stored entries are used.
+//   DLL address 0x1002ABB0 (dword_1002ABB0).
+static const int* const kAmsDepth = kChipRodata + 180;
+// Vibrato multiplier table for OPN (values around 2048 = x1.0).  Only reachable through the function-table pointer
+// that the generator never uses for OPN, so it is kept for completeness.   96 entries.  DLL address 0x1002AD40.
+static const int* const kOpnPitchModTable = kChipRodata + 280;
+// LFO speed for OPN register 0x22 bits 0-2 (phase step per 8 samples).   8 entries.  DLL address 0x1002AEC0.
+static const int* const kLfoRate = kChipRodata + 376;
+// OPM: key-code low nibble (0-15) -> semitone index 0-11 (entries 3, 7, 11, 15 are unused fillers).
+//   Only the first 16 of the 576 stored entries are used.  DLL address 0x1002AEE0 (dword_1002AEE0).
+static const int* const kOpmNoteToSemitone = kChipRodata + 384;
+// Vibrato multiplier table used by chip mode 1 (OPM); values around 2048 = x1.0.   560 entries.  DLL address 0x1002B7E0.
+static const int* const kOpmPitchModTable = kChipRodata + 960;
+// OPM frequency table, indexed by (DT2 offset + 6-bit key fraction + 64 * semitone); the octave is applied as a left
+// shift afterwards.   1376 entries.  DLL address 0x1002C0A0 (dword_1002C0A0).
+static const int* const kOpmFrequencyTable = kChipRodata + 1520;
+// PSG amplitude (0..31 -> 0..10922), roughly 3 dB per step; also used for the PSG hardware-envelope output.
+//   32 entries (36 stored).  DLL address 0x1002D620.
+static const int* const kPsgAmplitude = kChipRodata + 2896;
+
+// ---- Envelope-rate tables --------------------------------------------------------------------------------------
+// The DLL addresses one block of .rdata starting at 0x1002FA30 through several symbols (dword_1002FA30, ..FB80, ..FC30,
+// ..FC80, ..FCC0).  It is stored once here and exposed through the named views below.
+static const int kRateBlock[176] = {
   1535204995, -863865469, -393054322, -729109886, -1048387192, -1568488318, -1216160638, 824722049, 2701357, 622883621, -1770812060, 6563290,
   1095258916, 8081490, 1095517732, 31572, 1095258916, 607080530, 1413565510, -543703658, -343094910, -1434261374, -394092414, -1216160638,
   622871169, -1770812060, 6563290, 543449442, 1869376609, 1769234787, 28271, 684837, 6881348, 6619250, 7602275, 7274579,
@@ -297,8 +335,23 @@ static const int kR2FA30[176] = {
   2, 1, 3, 0, 268633092, 268448384, 268633240, 268464679,
 };
 
-// dword_10033688: sine table, 1024 entries, amplitude +-1000
-static const int kSine[1024] = {
+// Operator slot (0-3) that OPN register 0xA8-0xAA (channel-3 special mode) addresses; index = register - 0xA8.
+//   DLL address 0x1002FA30 + 4*reg.   Values 2, 1, 3.
+static const int* const kCh3SlotForReg = kRateBlock + 168;
+// Envelope step mantissa for the 16 fastest rates (rate 48..63; index = rate - 48).  DLL address 0x1002FB80 + 4*rate.
+static const int* const kRateMantissaFast = kRateBlock + 84 + 48;
+// Envelope step mantissa for rates 3..47 (index = rate & 3).  DLL address 0x1002FC30.
+static const int* const kRateMantissa = kRateBlock + 128;
+// Envelope step exponent (counter shift) for each group of four rates (index = rate >> 2).  DLL address 0x1002FC80.
+static const int* const kRateExponent = kRateBlock + 148;
+// Order in which a channel's four operators are keyed on/off by the 4-bit mask of register 0x28 (OPN) / 0x08 (OPM).
+//   DLL address 0x1002FCC0.   Values 0, 2, 1, 3.
+static const int* const kKeyOnSlotOrder = kRateBlock + 164;
+
+// ---- Waveform ------------------------------------------------------------------------------------------------
+// One period of the sine wave in 1024 steps, amplitude +-1000.  Operators read it at (phase + modulation) & 0x3FF.
+//   DLL address 0x10033688 (dword_10033688, initialised data).
+static const int kSineTable[1024] = {
   0, 6, 12, 18, 25, 31, 37, 43, 49, 55, 61, 67,
   74, 80, 86, 92, 98, 104, 110, 116, 122, 128, 135, 141,
   147, 153, 159, 165, 171, 177, 183, 189, 195, 201, 207, 213,

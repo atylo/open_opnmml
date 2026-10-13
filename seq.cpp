@@ -1,4 +1,21 @@
-// Faithful port of the wuopn.dll sequencer. IDA names are given next to each function.
+// ================================================================================================================
+// Sequencer - port of wuopn.dll's bytecode player (classes CSoundSeqCh and CSoundSequencer).
+//
+// The MML compiler (mmlcomp.cpp) turns each channel of a song into a byte stream.  This file plays those streams:
+//   * Sequencer::tick() runs once per MUSICAL tick (48 per quarter note); the mixer calls step1ms() every millisecond
+//     and a timer inside decides when a musical tick is due (so tempo changes simply change the timer step);
+//   * SeqCh::tick() advances one channel: it reads commands until it reaches a note or rest, counts the note's length
+//     down, runs the pitch/volume modulations (LFOs, envelope, bend, portamento, release) and finally writes the chip
+//     registers that make the note sound.
+//
+// Bytecode (see mmldump.cpp for a readable listing):
+//   0x01-0x7E  NOTE n, length      0x7F REST, length      0x00 end of channel
+//   0x80 VOLUME  0x81 DETUNE  0x82 TONE  0x83 TIE  0x87 TEMPO  0x88 PORTAMENTO  0x8F REGISTER_WRITE  0x90 PITCH_BEND
+//   0x94 RELEASE_FADE  0x95 FADE_OUT  0x96/0x97 VOLUME_UP/DOWN  0x98-0x9A PAN  0xA0-0xA3 LFOs  0xA5 VOLUME_ENVELOPE
+//   0xC0 LOOP_BEGIN  0xC1 LOOP_BREAK  0xC2 LOOP_END  0xCF SONG_LOOP_POINT
+//
+// Function names in comments (sub_XXXXXXXX) are the Hex-Rays names in wuopn.cpp.
+// ================================================================================================================
 #include "seq.hpp"
 #include "tables.inc"
 #include <cstring>
@@ -8,6 +25,15 @@ namespace opnmml {
 static const uint8_t* tonePtr(const Song* s, int n) { return s->tones[n & 0x7F].b; }   // sub_1001BDF0
 
 // ---------------------------------------------------------------- SeqCh
+
+namespace {
+// Events a channel collects while processing one tick, acted on at the end of SeqCh::tick().
+enum TickFlags {
+    FLAG_NEW_NOTE = 1,   // a new note starts: write the tone's operator registers and key on
+    FLAG_KEY_OFF  = 2,   // key off first (needed before retriggering, and when a note or rest ends the sound)
+    FLAG_UPDATE   = 4    // pitch and volume have to be (re)written to the chip
+};
+}  // namespace
 
 void SeqCh::reset() {                      // sub_1001BF40
     len = 0; passes = 0; base = nullptr; size = 0; curPitch = 0; pitch16 = 0; vol = 0;
@@ -28,64 +54,70 @@ void SeqCh::keyOff() {                                      // sub_1001EA80
     else if (index < 3)    chip->write(0x28, index);
 }
 
-// sub_1001E350 : program pitch + volume (and PSG mixer / noise) for the channel
-void SeqCh::setNote(int a2, int a3, int a4) {
+// Program pitch and volume of this channel into the chip.                                       [sub_1001E350]
+//   toneNo : tone/instrument number (for PSG voices it also encodes the mixer: bit 6 = tone on, bit 5 = noise on,
+//            bits 0-4 = noise period)
+//   pitch  : 16 steps per semitone, 192 per octave (0 = lowest note)
+//   volume : 0..15 (15 = loudest); FM carriers get 4 total-level steps of attenuation per volume step below 15
+// What is written depends on the chip: OPM channel 0-7 -> TL registers + key code + key fraction;
+// OPM channel 8-10 -> PSG voice; OPN channel 0-2 -> TL registers + F-number; OPN channel 3-5 -> PSG voice.
+void SeqCh::setNote(int toneNo, int pitch, int volume) {
     const Song* S = seq->song;
     int m = chip->mode();
     if (m != 0 && m != 5) {
         if (index > 7) {                                    // X1: PSG voices (OPN register file)
-            int per = kPsgPeriod[a3 <= 192 ? 0 : a3 - 192];
+            int period = kPsgPeriodTable[pitch <= 192 ? 0 : pitch - 192];
             int n = index - 8;
-            if ((a2 >> 5) != 0) {
-                int v10 = ((a2 & 0x40) != 0) | ((a2 & 0x20) != 0 ? 8 : 0);
-                int cur = chip->read(7);
-                chip->writeOpn(7, ~(v10 << n) & ((9 << n) | cur));
-                chip->writeOpn(6, a2 & 0x1F);
+            if ((toneNo >> 5) != 0) {
+                int mixerBits = ((toneNo & 0x40) != 0) | ((toneNo & 0x20) != 0 ? 8 : 0);
+                int mixerReg = chip->read(7);
+                chip->writeOpn(7, ~(mixerBits << n) & ((9 << n) | mixerReg));
+                chip->writeOpn(6, toneNo & 0x1F);
             } else {
-                int cur = chip->read(7);
-                chip->writeOpn(7, ~(1 << n) & ((9 << n) | cur));
+                int mixerReg = chip->read(7);
+                chip->writeOpn(7, ~(1 << n) & ((9 << n) | mixerReg));
             }
-            chip->writeOpn(2 * n, per);
-            chip->writeOpn(2 * n + 1, per >> 8);
-            if (state == 0) a4 = 0;
-            chip->writeOpn(n + 8, a4);
+            chip->writeOpn(2 * n, period);
+            chip->writeOpn(2 * n + 1, period >> 8);
+            if (state == 0) volume = 0;
+            chip->writeOpn(n + 8, volume);
         } else {                                            // X1: OPM FM voices
-            int v32 = a3 - 47; if (v32 < 0) v32 = 0;
-            int oct = v32 / 192, semi = (v32 % 192) >> 4;
+            int keyPos = pitch - 47; if (keyPos < 0) keyPos = 0;
+            int oct = keyPos / 192, semi = (keyPos % 192) >> 4;
             static const int kc[12] = {0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14};
-            const uint8_t* t = tonePtr(S, a2 & 0x7F);
+            const uint8_t* t = tonePtr(S, toneNo & 0x7F);
             for (int i = 0; i < 4; i++) {
                 int tl = t[6 * i + 1];
-                if (tl & 0x80) { tl = (tl & 0x7F) + 4 * (15 - a4); if (tl > 0x7F) tl = 127; }
+                if (tl & 0x80) { tl = (tl & 0x7F) + 4 * (15 - volume); if (tl > 0x7F) tl = 127; }
                 chip->write(index + 8 * i + 96, tl);
             }
             chip->write(index + 32, (pan << 6) | t[24]);
             chip->write(index + 40, kc[semi] | (16 * oct));
-            chip->write(index + 48, 16 * (v32 & 0xF));
+            chip->write(index + 48, 16 * (keyPos & 0xF));
         }
     } else if (index >= 3) {                                // PC-88: PSG voices
-        int per = kPsgPeriod[a3 <= 192 ? 0 : a3 - 192];
+        int period = kPsgPeriodTable[pitch <= 192 ? 0 : pitch - 192];
         int n = index - 3;
-        if ((a2 >> 5) != 0) {
-            int v21 = ((a2 & 0x40) != 0) | ((a2 & 0x20) != 0 ? 8 : 0);
-            int cur = chip->read(7);
-            chip->write(7, ~(v21 << n) & ((9 << n) | cur));
-            chip->write(6, a2 & 0x1F);
+        if ((toneNo >> 5) != 0) {
+            int mixerBits = ((toneNo & 0x40) != 0) | ((toneNo & 0x20) != 0 ? 8 : 0);
+            int mixerReg = chip->read(7);
+            chip->write(7, ~(mixerBits << n) & ((9 << n) | mixerReg));
+            chip->write(6, toneNo & 0x1F);
         } else {
-            int cur = chip->read(7);
-            chip->write(7, ~(1 << n) & ((9 << n) | cur));
+            int mixerReg = chip->read(7);
+            chip->write(7, ~(1 << n) & ((9 << n) | mixerReg));
         }
-        chip->write(2 * n, per);
-        chip->write(2 * n + 1, per >> 8);
-        if (state == 0) a4 = 0;
-        chip->write(n + 8, a4);
+        chip->write(2 * n, period);
+        chip->write(2 * n + 1, period >> 8);
+        if (state == 0) volume = 0;
+        chip->write(n + 8, volume);
     } else {                                                // PC-88: OPN FM voices
-        int oct = a3 / 192, fr = a3 % 192;
-        int fn = kFnum[fr] | (oct << 11);
-        const uint8_t* t = tonePtr(S, a2 & 0x7F);
+        int oct = pitch / 192, fr = pitch % 192;
+        int fn = kOpnFnumTable[fr] | (oct << 11);
+        const uint8_t* t = tonePtr(S, toneNo & 0x7F);
         for (int j = 0; j < 4; j++) {
             int tl = t[6 * j + 1];
-            if (tl & 0x80) { tl = (tl & 0x7F) + 4 * (15 - a4); if (tl > 0x7F) tl = 127; }
+            if (tl & 0x80) { tl = (tl & 0x7F) + 4 * (15 - volume); if (tl > 0x7F) tl = 127; }
             chip->write(index + 4 * j + 64, tl);
         }
         chip->write((index - 92) & 0xFF, fn >> 8);
@@ -93,21 +125,22 @@ void SeqCh::setNote(int a2, int a3, int a4) {
     }
 }
 
-// sub_1001DAF0 : execute one control opcode.  p enters pointing at the opcode.
+// Execute one control command (opcode >= 0x80).  p enters pointing at the opcode and leaves pointing at the next
+// command.                                                                                      [sub_1001DAF0]
 void SeqCh::dispatch(uint8_t op, const uint8_t*& p) {
-    uint8_t v6 = *++p;
+    uint8_t arg = *++p;
     ++p;
     auto rd = [&p]() -> uint8_t { return *p++; };
     switch (op) {
-    case 0x80: vol = v6; break;
-    case 0x81: detune = (int16_t)(rd() | (v6 << 8)); break;
-    case 0x82: tone = v6; break;
+    case 0x80: vol = arg; break;
+    case 0x81: detune = (int16_t)(rd() | (arg << 8)); break;
+    case 0x82: tone = arg; break;
     case 0x83: tie = 1; --p; break;
-    case 0x87: seq->setTempo(v6); break;
-    case 0x88: porta = (int8_t)v6; break;
-    case 0x8F: { int v5 = rd(); chip->write(v6, v5); break; }
+    case 0x87: seq->setTempo(arg); break;
+    case 0x88: porta = (int8_t)arg; break;
+    case 0x8F: { int value = rd(); chip->write(arg, value); break; }
     case 0x90: {
-        int16_t a = (int16_t)(rd() | (v6 << 8));
+        int16_t a = (int16_t)(rd() | (arg << 8));
         bend = (int32_t)a << 6;
         uint8_t h = rd();
         bendRate = (int16_t)(rd() | (h << 8));
@@ -115,10 +148,10 @@ void SeqCh::dispatch(uint8_t op, const uint8_t*& p) {
         bendLen = (uint16_t)(rd() | (h2 << 8));
         break;
     }
-    case 0x94: rStep = v6; rDec = rd(); rCnt = 0; break;
-    case 0x95: seq->setFade(v6); break;
-    case 0x96: vol += v6; if (vol > 15) vol = 15; break;
-    case 0x97: vol -= v6; if (vol & 0x80) vol = 0; break;
+    case 0x94: rStep = arg; rDec = rd(); rCnt = 0; break;
+    case 0x95: seq->setFade(arg); break;
+    case 0x96: vol += arg; if (vol > 15) vol = 15; break;
+    case 0x97: vol -= arg; if (vol & 0x80) vol = 0; break;
     case 0x98: pan = 1; --p; break;
     case 0x99: pan = 2; --p; break;
     case 0x9A: pan = 3; --p; break;
@@ -127,35 +160,35 @@ void SeqCh::dispatch(uint8_t op, const uint8_t*& p) {
     case 0x9F: case 0xA6: case 0xF0: case 0xF1: case 0xF2: case 0xF3:
         break;                                              // two-byte no-ops
     case 0xA0: case 0xA2:
-        lfoPType = v6;
+        lfoPType = arg;
         lfoPPeriod = rd();
         { int8_t d = (int8_t)rd(); lfoPDepth = (op == 0xA2) ? (int16_t)(4 * d) : (int16_t)d; }
         lfoPDelay = rd();
         lfoPDcnt = lfoPDelay; lfoPCnt = lfoPPeriod; lfoPPhase = 0;
         break;
     case 0xA1: case 0xA3:
-        lfoAType = v6;
+        lfoAType = arg;
         lfoAPeriod = rd();
         { int8_t d = (int8_t)rd(); lfoADepth = (op == 0xA3) ? (int16_t)(4 * d) : (int16_t)d; }
         lfoADelay = rd();
         lfoADcnt = lfoADelay; lfoACnt = lfoAPeriod; lfoAPhase = 0;
         break;
     case 0xA5:
-        envNo = (int8_t)v6; envPeriod = rd(); envCnt = envPeriod; envIdx = 0;
+        envNo = (int8_t)arg; envPeriod = rd(); envCnt = envPeriod; envIdx = 0;
         break;
     case 0xC0:
-        if (depth < 5) { cnt[depth] = v6; ++depth; }
+        if (depth < 5) { cnt[depth] = arg; ++depth; }
         break;
     case 0xC1: {
-        uint16_t v23 = (uint16_t)(rd() | (v6 << 8));
-        if (depth != 0 && cnt[depth - 1] == 1) { p += v23; --depth; }
+        uint16_t skip = (uint16_t)(rd() | (arg << 8));
+        if (depth != 0 && cnt[depth - 1] == 1) { p += skip; --depth; }
         break;
     }
     case 0xC2: {
-        uint16_t v24 = (uint16_t)(*p | (v6 << 8));
+        uint16_t back = (uint16_t)(*p | (arg << 8));
         ++p;
         if (depth != 0) {
-            if (--cnt[depth - 1] != 0) p -= v24;
+            if (--cnt[depth - 1] != 0) p -= back;
             else --depth;
         }
         break;
@@ -165,16 +198,19 @@ void SeqCh::dispatch(uint8_t op, const uint8_t*& p) {
     }
 }
 
-// sub_1001EAF0 : one musical tick for this channel
-bool SeqCh::tick(bool a2) {
+// Advance this channel by one musical tick (1/48 of a quarter note).                            [sub_1001EAF0]
+//   mayWrite : false when a higher-priority sequencer is currently driving the chip; the channel still advances but
+//              does not touch the registers.
+// Returns true while the channel is still playing.
+bool SeqCh::tick(bool mayWrite) {
     const Song* S = seq->song;
-    bool v32 = true;
-    int v29 = 0;
-    int16_t v30 = 0;
-    int v23 = 0;
+    bool running = true;
+    int flags = 0;
+    int16_t pitch = 0;
+    int volume = 0;
     const uint8_t* p = nullptr;
-    if (base == nullptr || state == 0) v32 = false;
-    if (v32) {
+    if (base == nullptr || state == 0) running = false;
+    if (running) {
         p = base + off;
         tie = 0;
         while (len == 0) {
@@ -184,8 +220,8 @@ bool SeqCh::tick(bool a2) {
                 if (loopOff == 0) {
                     passes = 0xFF; state = 0;
                     off = (int32_t)(p - base);
-                    v29 |= 2; v32 = false;
-                    if (owns && a2) { setNote(tone, curPitch, 15); keyOff(); }
+                    flags |= FLAG_KEY_OFF; running = false;
+                    if (owns && mayWrite) { setNote(tone, curPitch, 15); keyOff(); }
                     break;
                 }
                 if (passes > 0x7F) passes = 127;
@@ -200,7 +236,7 @@ bool SeqCh::tick(bool a2) {
                     if (state != 4 && state != 3) {
                         rCnt = 0;
                         if (rStep != 0) state = 3;
-                        else { state = 4; v29 |= 2; }
+                        else { state = 4; flags |= FLAG_KEY_OFF; }
                     }
                 } else {
                     dispatch(op, p);
@@ -216,73 +252,73 @@ bool SeqCh::tick(bool a2) {
                     lfoACnt = lfoAPeriod; lfoADcnt = lfoADelay;
                     envCnt = envPeriod;
                     rAcc = 0;
-                    v29 |= 3;
+                    flags |= FLAG_NEW_NOTE | FLAG_KEY_OFF;
                 }
             }
         }
         off = (int32_t)(p - base);
     }
-    if (v32) {
-        v29 |= 4;
+    if (running) {
+        flags |= FLAG_UPDATE;
         --len;
-        v30 = (int16_t)(detune + pitch16);
+        pitch = (int16_t)(detune + pitch16);
         if (lfoPType != 0) {
             if (lfoPDcnt != 0) --lfoPDcnt;
             else if (lfoPCnt != 0) --lfoPCnt;
             else { lfoPCnt = lfoPPeriod; ++lfoPPhase; }
             switch (lfoPType) {
-            case 1: if (lfoPPhase & 1) v30 += lfoPDepth; break;
+            case 1: if (lfoPPhase & 1) pitch += lfoPDepth; break;
             case 2: {
-                int v2;
-                if (lfoPPhase & 1) v2 = lfoPCnt * lfoPDepth / lfoPPeriod;
-                else               v2 = (lfoPPeriod - lfoPCnt) * lfoPDepth / lfoPPeriod;
-                v30 += v2;
+                int lfoDelta;
+                if (lfoPPhase & 1) lfoDelta = lfoPCnt * lfoPDepth / lfoPPeriod;
+                else               lfoDelta = (lfoPPeriod - lfoPCnt) * lfoPDepth / lfoPPeriod;
+                pitch += lfoDelta;
                 break;
             }
             case 4: {
                 int ph = lfoPPhase & 3;
-                if (ph == 1) v30 += lfoPDepth; else if (ph == 3) v30 -= lfoPDepth;
+                if (ph == 1) pitch += lfoPDepth; else if (ph == 3) pitch -= lfoPDepth;
                 break;
             }
             default: break;
             }
         }
-        if (porta != 0 && ((porta * curPitch + (8 - porta) * v30) >> 3) != curPitch)
-            v30 = (int16_t)((porta * curPitch + (8 - porta) * v30) >> 3);
+        if (porta != 0 && ((porta * curPitch + (8 - porta) * pitch) >> 3) != curPitch)
+            pitch = (int16_t)((porta * curPitch + (8 - porta) * pitch) >> 3);
         if (bendLen != 0) {
             --bendLen;
             bend -= bendRate;
-            v30 += (int16_t)(bend >> 6);
+            pitch += (int16_t)(bend >> 6);
         }
-        if (v30 >= 0) { if (v30 > 1536) v30 = 1536; } else v30 = 0;
-        curPitch = v30;
+        if (pitch >= 0) { if (pitch > 1536) pitch = 1536; } else pitch = 0;
+        curPitch = pitch;
 
-        int16_t v24 = (int16_t)vol;
+        int16_t level = (int16_t)vol;
         if (state == 4) {
-            if (index >= 3) v24 = 0;
+            if (index >= 3) level = 0;
         } else {
             if (state == 3) {
                 if (rCnt != 0) --rCnt;
                 else { rCnt = rStep; rAcc += rDec; }
-                v24 -= (int8_t)rAcc;
-                if (v24 < 0) { state = 4; v29 |= 2; }
+                level -= (int8_t)rAcc;
+                if (level < 0) { state = 4; flags |= FLAG_KEY_OFF; }
             }
             if (lfoAType != 0) {
                 if (lfoADelay != 0) --lfoADelay;             // the original decrements the stored delay itself
                 else if (lfoACnt != 0) --lfoACnt;
                 else { lfoACnt = lfoAPeriod; ++lfoAPhase; }
                 switch (lfoAType) {
-                case 1: if (lfoAPhase & 1) v24 += lfoADepth; break;
+                case 1: if (lfoAPhase & 1) level += lfoADepth; break;
                 case 2: {
-                    int v3;
-                    if (lfoAPhase & 1) v3 = lfoACnt * lfoADepth / lfoAPeriod;
-                    else               v3 = (lfoAPeriod - lfoACnt) * lfoADepth / lfoAPeriod;
-                    v24 += v3;
+                    int lfoDelta;
+                    if (lfoAPhase & 1) lfoDelta = lfoACnt * lfoADepth / lfoAPeriod;
+                    else               lfoDelta = (lfoAPeriod - lfoACnt) * lfoADepth / lfoAPeriod;
+                    level += lfoDelta;
                     break;
                 }
                 case 4: {
                     int ph = lfoAPhase & 3;
-                    if (ph == 1) v24 += lfoADepth; else if (ph == 3) v24 -= lfoADepth;
+                    if (ph == 1) level += lfoADepth; else if (ph == 3) level -= lfoADepth;
                     break;
                 }
                 default: break;
@@ -295,22 +331,22 @@ bool SeqCh::tick(bool a2) {
                     envCnt = envPeriod;
                     if (++envIdx == e.count) envIdx = (int16_t)(int8_t)e.loop;
                 }
-                v24 += e.v[envIdx];
+                level += e.v[envIdx];
             }
-            if (state == 1) v24 = 0;
+            if (state == 1) level = 0;
         }
-        int16_t v25 = (int16_t)(v24 - seq->fadeAtten());
-        v23 = v25 - seq->masterAtten;
-        if (v23 >= 0) { if (v23 > 15) v23 = 15; } else v23 = 0;
+        int16_t levelAfterFade = (int16_t)(level - seq->fadeAtten());
+        volume = levelAfterFade - seq->masterAtten;
+        if (volume >= 0) { if (volume > 15) volume = 15; } else volume = 0;
     }
-    if (a2) {
+    if (mayWrite) {
         if (owns) {
-            if (v29 & 2) { keyOff(); v29 &= ~2; }
-            if (v29 & 4) { setNote(tone, v30, v23); v29 &= ~4; }
+            if (flags & FLAG_KEY_OFF) { keyOff(); flags &= ~FLAG_KEY_OFF; }
+            if (flags & FLAG_UPDATE) { setNote(tone, pitch, volume); flags &= ~FLAG_UPDATE; }
         }
-        if (v29 & 1) {
-            if (v29 & 2) { keyOff(); v29 &= ~2; }
-            if (v29 & 4) setNote(tone, v30, v23);
+        if (flags & FLAG_NEW_NOTE) {
+            if (flags & FLAG_KEY_OFF) { keyOff(); flags &= ~FLAG_KEY_OFF; }
+            if (flags & FLAG_UPDATE) setNote(tone, pitch, volume);
             if (chip->mode() != 0) {
                 if (index <= 7) {                            // OPM operator registers
                     const uint8_t* t = tonePtr(S, tone & 0x7F);
@@ -318,7 +354,7 @@ bool SeqCh::tick(bool a2) {
                         const uint8_t* c = t + 6 * i;
                         chip->write(index + 8 * i + 64, c[0]);
                         int tl = c[1];
-                        if (tl & 0x80) { tl = (tl & 0x7F) + 4 * (15 - v23); if (tl > 0x7F) tl = 127; }
+                        if (tl & 0x80) { tl = (tl & 0x7F) + 4 * (15 - volume); if (tl > 0x7F) tl = 127; }
                         chip->write(index + 8 * i + 96, tl);
                         chip->write(index + 8 * i + 0x80, c[2]);
                         chip->write((index + 8 * i - 96) & 0xFF, c[3]);
@@ -335,7 +371,7 @@ bool SeqCh::tick(bool a2) {
                     const uint8_t* c = t + 6 * j;
                     chip->write(index + 4 * j + 48, c[0]);
                     int tl = c[1];
-                    if (tl & 0x80) { tl = (tl & 0x7F) + 4 * (15 - v23); if (tl > 0x7F) tl = 127; }
+                    if (tl & 0x80) { tl = (tl & 0x7F) + 4 * (15 - volume); if (tl > 0x7F) tl = 127; }
                     chip->write(index + 4 * j + 64, tl);
                     chip->write(index + 4 * j + 80, c[2]);
                     chip->write(index + 4 * j + 96, c[3]);
@@ -351,7 +387,7 @@ bool SeqCh::tick(bool a2) {
     } else {
         owns = false;
     }
-    return v32;
+    return running;
 }
 
 // ---------------------------------------------------------------- Sequencer

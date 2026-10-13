@@ -1,5 +1,11 @@
-// Extracted from wuopn.dll .rdata (dword_1002D6B0 / dword_1002D9B0)
-static const int kFnum[192] = {
+// Note-pitch tables for the sequencer (included by seq.cpp).  Extracted from wuopn.dll .rdata.
+//
+// kOpnFnumTable   : OPN F-number for each of the 192 pitch steps of one octave (16 steps per semitone), 617..1230.
+//                   The sequencer ORs in (octave << 11) to build the value written to registers 0xA4/0xA0.
+//                   DLL address 0x1002D6B0 (dword_1002D6B0).
+// kPsgPeriodTable : PSG tone period for each of 1536 pitch steps (8 octaves x 192), 3788 down to 15.
+//                   DLL address 0x1002D9B0 (dword_1002D9B0).
+static const int kOpnFnumTable[192] = {
   617, 619, 622, 624, 626, 628, 631, 633, 635, 638, 640, 642,
   645, 647, 649, 652, 654, 656, 659, 661, 663, 666, 668, 671,
   673, 676, 678, 680, 683, 685, 688, 690, 693, 695, 698, 700,
@@ -17,7 +23,7 @@ static const int kFnum[192] = {
   1132, 1136, 1140, 1144, 1148, 1153, 1157, 1161, 1165, 1169, 1174, 1178,
   1182, 1186, 1191, 1195, 1199, 1204, 1208, 1212, 1217, 1221, 1226, 1230,
 };
-static const int kPsgPeriod[1536] = {
+static const int kPsgPeriodTable[1536] = {
   3788, 3788, 3788, 3677, 3677, 3677, 3677, 3677, 3677, 3677, 3677, 3572,
   3572, 3572, 3572, 3572, 3572, 3572, 3572, 3473, 3473, 3473, 3473, 3473,
   3473, 3473, 3473, 3379, 3379, 3379, 3379, 3379, 3379, 3379, 3379, 3290,

@@ -35,7 +35,7 @@ const char* const E_SYNTAX      = "Syntax Error.";
 const char* const E_PITCH       = "Bad pitch.";
 const char* const E_BEND        = "Bad bend.";
 const char* const E_BENDW       = "Bend width too large.";
-const char* const E_OCTAVE      = "Bad octave. (1-8)";
+const char* const E_OCTAVE      = "Octave out of range (valid octaves are 0-7; the original message said 1-8).";
 
 // ---- tone parameter table (rdata 0x1002F2E0: name,min,max,shift) ----
 struct PDef { const char* name; int mn, mx, sh; };
@@ -122,16 +122,16 @@ struct Comp {
 
     void fail(const char* msg, int line) {
         char buf[512];
-        snprintf(buf, sizeof buf, "%s %d", msg, line);
+        snprintf(buf, sizeof buf, "line %d: %s", line, msg);
         S.error = buf;
     }
 
     // sub_1001C170 : $SHARP{...} / $FLAT{...}
     bool keySig(const char*& p, int line, int& col) {
         (void)line;
-        int v6 = 0;
-        if (strncmp(p, "$SHARP{", 6) == 0)      { p += 7; col += 7; v6 = 1; }
-        else if (strncmp(p, "$FLAT{", 5) == 0)  { p += 6; col += 6; v6 = -1; }
+        int accidental = 0;
+        if (strncmp(p, "$SHARP{", 6) == 0)      { p += 7; col += 7; accidental = 1; }
+        else if (strncmp(p, "$FLAT{", 5) == 0)  { p += 6; col += 6; accidental = -1; }
         else { S.error = "$SHARP/$FLAT"; return false; }
         static const int nat[7] = {0, 2, 4, 5, 7, 9, 11};
         for (int i = 0; i < 7; i++) C().keysig[i] = nat[i];
@@ -144,7 +144,7 @@ struct Comp {
                 case 'b': idx = 6; break;
             }
             if (idx < 0) break;
-            C().keysig[idx] = nat[idx] + v6;
+            C().keysig[idx] = nat[idx] + accidental;
             ++p; ++col;
             skipSp(p, col);
         }
@@ -500,89 +500,89 @@ struct Comp {
     bool defBlock(const char* a2, int line) {
         const char* p = a2;
         int col = 0;
-        int v23[256]; memset(v23, 0, sizeof v23);
-        int v27 = 0, v26 = -1;
+        int values[256]; memset(values, 0, sizeof values);
+        int count = 0, loopIndex = -1;
         bool env = false;
-        char m[256];
+        char msg[256];
         skipWs(p, col);
         if (*p == 'e' || *p == 'E') { env = true; ++p; skipWs(p, col); }
         int num = parseInt(p, col, NONE);
         if (env) {
-            if (num < 1 || num >= 64) { snprintf(m, sizeof m, "Envelope number out of range (1-63), near line %d", line); S.error = m; return true; }
+            if (num < 1 || num >= 64) { snprintf(msg, sizeof msg, "Envelope number out of range (1-63), near line %d", line); S.error = msg; return true; }
         } else if ((unsigned)num >= 0x80) {
-            snprintf(m, sizeof m, "Tone number out of range (0-127), near line %d", line); S.error = m; return true;
+            snprintf(msg, sizeof msg, "Tone number out of range (0-127), near line %d", line); S.error = msg; return true;
         }
         skipWs(p, col);
-        if (env && comma(p, col)) { v26 = parseInt(p, col, NONE); skipWs(p, col); }
+        if (env && comma(p, col)) { loopIndex = parseInt(p, col, NONE); skipWs(p, col); }
         if (*p != '=') {
-            snprintf(m, sizeof m, env ? "Bad envelope definition (1-63), near line %d" : "Bad tone number definition (0-127), near line %d", line);
-            S.error = m; return true;
+            snprintf(msg, sizeof msg, env ? "Bad envelope definition (1-63), near line %d" : "Bad tone number definition (0-127), near line %d", line);
+            S.error = msg; return true;
         }
         ++p; skipWs(p, col);
         if (*p != '{') {
-            snprintf(m, sizeof m, env ? "Bad envelope definition (1-63), near line %d" : "Bad tone number definition (0-127), near line %d", line);
-            S.error = m; return true;
+            snprintf(msg, sizeof msg, env ? "Bad envelope definition (1-63), near line %d" : "Bad tone number definition (0-127), near line %d", line);
+            S.error = msg; return true;
         }
         ++p; skipWs(p, col);
-        v23[v27] = parseInt(p, col, NONE);
-        while (v23[v27] != NONE) {
-            if (++v27 >= 65) break;
+        values[count] = parseInt(p, col, NONE);
+        while (values[count] != NONE) {
+            if (++count >= 65) break;
             skipWs(p, col);
             if (!comma(p, col)) break;
             skipWs(p, col);
-            v23[v27] = parseInt(p, col, NONE);
+            values[count] = parseInt(p, col, NONE);
         }
         if (env) {
-            if (v27 < 1 || v27 >= 64) { snprintf(m, sizeof m, "Envelope entry count out of range (1-63), near line %d", line); S.error = m; return true; }
+            if (count < 1 || count >= 64) { snprintf(msg, sizeof msg, "Envelope entry count out of range (1-63), near line %d", line); S.error = msg; return true; }
             Envelope& e = S.envs[num];
-            e.count = (int16_t)v27;
-            if (v26 < 0) v26 = v27 - 1;
-            e.loop = (int16_t)v26;
-            for (int i = 0; i < v27; i++) e.v[i] = (int16_t)v23[i];
+            e.count = (int16_t)count;
+            if (loopIndex < 0) loopIndex = count - 1;
+            e.loop = (int16_t)loopIndex;
+            for (int i = 0; i < count; i++) e.v[i] = (int16_t)values[i];
             return false;
         }
-        int v21 = S.x1Mode ? 11 : 10;
-        int v20[32];
-        for (int j = 0; j < 32; j++) v20[j] = (CARRIER[j] ? S.totalOffset : 0) + CARRIER[j];
-        if (v27 < 4 * v21 + 2 || v27 > 4 * v21 + 4) {
-            snprintf(m, sizeof m, "Tone parameter count out of range, near line %d", line); S.error = m; return true;
+        int valuesPerOp = S.x1Mode ? 11 : 10;
+        int carrierOffset[32];
+        for (int j = 0; j < 32; j++) carrierOffset[j] = (CARRIER[j] ? S.totalOffset : 0) + CARRIER[j];
+        if (count < 4 * valuesPerOp + 2 || count > 4 * valuesPerOp + 4) {
+            snprintf(msg, sizeof msg, "Tone parameter count out of range, near line %d", line); S.error = msg; return true;
         }
-        static const int v15[11] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 9};
+        static const int x1ParamOrder[11] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 9};
         for (int k = 0; k < 4; k++) {
-            for (int mm = 0; mm < v21; mm++) {
-                int ti = S.x1Mode ? v15[mm] : mm;
-                int& v = v23[mm + v21 * k];
+            for (int mm = 0; mm < valuesPerOp; mm++) {
+                int ti = S.x1Mode ? x1ParamOrder[mm] : mm;
+                int& v = values[mm + valuesPerOp * k];
                 if (v < PT[ti].mn || v > PT[ti].mx) {
-                    snprintf(m, sizeof m, "Tone parameter [%s] out of range (%d..%d), near line %d", PT[ti].name, PT[ti].mn, PT[ti].mx, line);
-                    S.error = m; return true;
+                    snprintf(msg, sizeof msg, "Tone parameter [%s] out of range (%d..%d), near line %d", PT[ti].name, PT[ti].mn, PT[ti].mx, line);
+                    S.error = msg; return true;
                 }
                 if (strcmp(PT[ti].name, "DT") == 0 && v < 0) { v = -v; v ^= 4; }
                 v <<= PT[ti].sh;
             }
         }
         for (int k = 0; k < 4; k++) {
-            int& v = v23[4 * v21 + k];
+            int& v = values[4 * valuesPerOp + k];
             const PDef& d = PT[11 + k];
             if (v < d.mn || v > d.mx) {
-                snprintf(m, sizeof m, "Tone parameter [%s] out of range (%d..%d), near line %d", d.name, d.mn, d.mx, line);
-                S.error = m; return true;
+                snprintf(msg, sizeof msg, "Tone parameter [%s] out of range (%d..%d), near line %d", d.name, d.mn, d.mx, line);
+                S.error = msg; return true;
             }
             v <<= d.sh;
         }
         uint8_t* t = S.tones[num].b;
         S.toneDefined[num] = true;
-        for (int i = 0; i < 4; i++) t[OPOFS[i] + 0] = (uint8_t)(v23[i * v21 + 8] | v23[i * v21 + 7]);
+        for (int i = 0; i < 4; i++) t[OPOFS[i] + 0] = (uint8_t)(values[i * valuesPerOp + 8] | values[i * valuesPerOp + 7]);
         for (int j = 0; j < 4; j++) {
-            uint8_t r = (uint8_t)(v20[4 * v23[4 * v21] + j] + v23[j * v21 + 5]);
+            uint8_t r = (uint8_t)(carrierOffset[4 * values[4 * valuesPerOp] + j] + values[j * valuesPerOp + 5]);
             t[OPOFS[j] + 1] = r;
-            if (((v20[4 * v23[4 * v21] + j] ^ r) & 0x80) != 0) t[OPOFS[j] + 1] = 0xFF;
+            if (((carrierOffset[4 * values[4 * valuesPerOp] + j] ^ r) & 0x80) != 0) t[OPOFS[j] + 1] = 0xFF;
         }
-        for (int k = 0; k < 4; k++) t[OPOFS[k] + 2] = (uint8_t)(v23[k * v21 + 6] | v23[k * v21]);
-        for (int k = 0; k < 4; k++) t[OPOFS[k] + 3] = (uint8_t)(v23[k * v21 + 9] | v23[k * v21 + 1]);
-        for (int k = 0; k < 4; k++) t[OPOFS[k] + 4] = (uint8_t)v23[k * v21 + 2];
-        for (int k = 0; k < 4; k++) t[OPOFS[k] + 5] = (uint8_t)(v23[k * v21 + 4] | v23[k * v21 + 3]);
-        t[24] = (uint8_t)(v23[4 * v21 + 1] | v23[4 * v21]);
-        t[25] = (uint8_t)(v23[4 * v21 + 3] | v23[4 * v21 + 2]);
+        for (int k = 0; k < 4; k++) t[OPOFS[k] + 2] = (uint8_t)(values[k * valuesPerOp + 6] | values[k * valuesPerOp]);
+        for (int k = 0; k < 4; k++) t[OPOFS[k] + 3] = (uint8_t)(values[k * valuesPerOp + 9] | values[k * valuesPerOp + 1]);
+        for (int k = 0; k < 4; k++) t[OPOFS[k] + 4] = (uint8_t)values[k * valuesPerOp + 2];
+        for (int k = 0; k < 4; k++) t[OPOFS[k] + 5] = (uint8_t)(values[k * valuesPerOp + 4] | values[k * valuesPerOp + 3]);
+        t[24] = (uint8_t)(values[4 * valuesPerOp + 1] | values[4 * valuesPerOp]);
+        t[25] = (uint8_t)(values[4 * valuesPerOp + 3] | values[4 * valuesPerOp + 2]);
         return false;
     }
 
@@ -606,97 +606,97 @@ struct Comp {
 
     // sub_10021E90 : top-level scanner (state machine, ported verbatim)
     bool run(const char* text) {
-        const char* v16 = text;
+        const char* cur = text;
         std::string buf;
         int st = 0, prevSt = 0, line = 1, col = 1;
         bool stop = false;
         static const struct { const char* name; int state; } DIR[] = {
             {"octave", 6}, {"title", 7}, {"machine", 8}, {"total_offset", 9}, {nullptr, 0}};
-        while (*v16 != 0 && !stop) {
-            char v10 = *v16++;
+        while (*cur != 0 && !stop) {
+            char c = *cur++;
             ++col;
-            if (st != 2 && st != 3 && v10 == '/') {
-                if (*v16 == '*' || *v16 == '/') {
+            if (st != 2 && st != 3 && c == '/') {
+                if (*cur == '*' || *cur == '/') {
                     prevSt = st;
-                    st = (*v16 == '*') ? 3 : 2;
-                    ++v16; ++col;
-                    if (*v16 == 0) break;
-                    v10 = *v16++; ++col;
+                    st = (*cur == '*') ? 3 : 2;
+                    ++cur; ++col;
+                    if (*cur == 0) break;
+                    c = *cur++; ++col;
                 }
             }
             bool skipTail = false;
             switch (st) {
             case 0:
-                if (v10 == '#') {
-                    skipSp(v16, col);
+                if (c == '#') {
+                    skipSp(cur, col);
                     for (int i = 0; DIR[i].name; i++) {
-                        if (prefixI(DIR[i].name, v16)) {
+                        if (prefixI(DIR[i].name, cur)) {
                             size_t n = strlen(DIR[i].name);
                             st = DIR[i].state;
-                            v16 += n; col += (int)n;
-                            skipSp(v16, col);
+                            cur += n; col += (int)n;
+                            skipSp(cur, col);
                             skipTail = true;           // goto LABEL_94
                             break;
                         }
                     }
-                } else if (v10 == '@') {
-                    skipSp(v16, col);
-                    if (*v16 == 'e' || *v16 == 'E') { buf.assign(1, *v16); st = 5; ++v16; ++col; }
-                    else if (*v16 >= '0' && *v16 <= '9') { buf.assign(1, *v16); st = 4; ++v16; ++col; }
-                } else if (col == 2 && v10 >= 'A' && v10 <= 'K') {
-                    buf.assign(1, v10);
+                } else if (c == '@') {
+                    skipSp(cur, col);
+                    if (*cur == 'e' || *cur == 'E') { buf.assign(1, *cur); st = 5; ++cur; ++col; }
+                    else if (*cur >= '0' && *cur <= '9') { buf.assign(1, *cur); st = 4; ++cur; ++col; }
+                } else if (col == 2 && c >= 'A' && c <= 'K') {
+                    buf.assign(1, c);
                     st = 1;
                 }
                 break;
             case 1:
-                buf.push_back(v10);
-                if (v10 == '\n') { stop = channelLine(buf.c_str(), line); st = 0; }
+                buf.push_back(c);
+                if (c == '\n') { stop = channelLine(buf.c_str(), line); st = 0; }
                 break;
             case 2:
-                if (v10 == '\n') st = prevSt;
+                if (c == '\n') st = prevSt;
                 break;
             case 3:
-                if (v10 == '*' && *v16 == '/') { st = prevSt; ++v16; ++col; }
+                if (c == '*' && *cur == '/') { st = prevSt; ++cur; ++col; }
                 break;
             case 4: case 5:
-                buf.push_back(v10);
-                if (v10 == '}') { stop = defBlock(buf.c_str(), line); st = 0; }
+                buf.push_back(c);
+                if (c == '}') { stop = defBlock(buf.c_str(), line); st = 0; }
                 break;
             case 6:
-                if (prefixI("x", v16 - 1)) { for (auto& c : S.ch) c.octDir = -1; }
-                else if (prefixI("n", v16 - 1)) { for (auto& c : S.ch) c.octDir = 1; }
+                if (prefixI("x", cur - 1)) { for (auto& c : S.ch) c.octDir = -1; }
+                else if (prefixI("n", cur - 1)) { for (auto& c : S.ch) c.octDir = 1; }
                 else { char m[64]; snprintf(m, sizeof m, "Pseudo-command error, line %d", line); S.error = m; stop = true; }
-                while (*v16 != 0 && *v16 != '\n') { ++v16; ++col; }
-                v10 = *v16++; ++col; st = 0;
+                while (*cur != 0 && *cur != '\n') { ++cur; ++col; }
+                c = *cur++; ++col; st = 0;
                 break;
             case 7:
-                while (*v16 != 0 && *v16 != '\n' && (v10 != '"' || *v16 != '"')) { S.title.push_back(*v16++); ++col; }
-                v10 = *v16++; ++col; st = 0;
+                while (*cur != 0 && *cur != '\n' && (c != '"' || *cur != '"')) { S.title.push_back(*cur++); ++col; }
+                c = *cur++; ++col; st = 0;
                 break;
             case 8:
-                if (prefixI("x1", v16 - 1))        { S.x1Mode = true;  S.machine = M_X1; }
-                else if (prefixI("pc88", v16 - 1)) { S.x1Mode = false; S.machine = M_PC88; }
-                else if (prefixI("mz", v16 - 1))   { S.x1Mode = false; S.machine = M_MZ; }
+                if (prefixI("x1", cur - 1))        { S.x1Mode = true;  S.machine = M_X1; }
+                else if (prefixI("pc88", cur - 1)) { S.x1Mode = false; S.machine = M_PC88; }
+                else if (prefixI("mz", cur - 1))   { S.x1Mode = false; S.machine = M_MZ; }
                 else { char m[64]; snprintf(m, sizeof m, "Pseudo-command error, line %d", line); S.error = m; stop = true; }
-                while (*v16 != 0 && *v16 != '\n') { ++v16; ++col; }
-                v10 = *v16++; ++col; st = 0;
+                while (*cur != 0 && *cur != '\n') { ++cur; ++col; }
+                c = *cur++; ++col; st = 0;
                 break;
             case 9: {
-                --v16;
-                int v5 = parseInt(v16, col, NONE);
-                if (v5 > 100 || v5 < -8) {
+                --cur;
+                int offset = parseInt(cur, col, NONE);
+                if (offset > 100 || offset < -8) {
                     char m[96]; snprintf(m, sizeof m, "Pseudo-command error, line %d: total_offset must be -8..100.", line);
                     S.error = m; stop = true;
                 }
-                S.totalOffset = v5 + 8;
-                while (*v16 != 0 && *v16 != '\n') { ++v16; ++col; }
-                v10 = *v16++; ++col; st = 0;
+                S.totalOffset = offset + 8;
+                while (*cur != 0 && *cur != '\n') { ++cur; ++col; }
+                c = *cur++; ++col; st = 0;
                 break;
             }
             default: break;
             }
             (void)skipTail;
-            if (v10 == '\n') { ++line; col = 1; }
+            if (c == '\n') { ++line; col = 1; }
         }
         if (stop) return false;
         return finish();
