@@ -65,9 +65,11 @@ int parseInt(const char*& p, int& col, int def) {
     if (*p == '-') { neg = true; ++p; ++col; }
     if (*p == '+') { neg = false; ++p; ++col; }
     skipSp(p, col);
-    while (*p >= '0' && *p <= '9') { v = 10 * v + (*p++ - '0'); ++col; got = true; }
+    // The DLL does this in 32-bit registers, so very long numbers wrap around.  Use unsigned arithmetic so the wrap-around
+    // is defined behaviour in C++ too (signed overflow is not).
+    while (*p >= '0' && *p <= '9') { v = (int)(10u * (unsigned)v + (unsigned)(*p++ - '0')); ++col; got = true; }
     skipSp(p, col);
-    if (neg) v = -v;
+    if (neg) v = (int)(0u - (unsigned)v);
     if (!got) { v = def; p = start; }
     return v;
 }
@@ -154,6 +156,8 @@ struct Comp {
     }
 
     // sub_1001FA30 : one MML command.  Returns false on error (S.error set).
+    // NOTE on signedness: in the original several argument variables are `unsigned int` (relative volume, EA number, LFO type
+    // and delay, P, R step, v, y), so their range checks also reject NEGATIVE values.  Found by differential fuzzing.
     bool command(const char*& p, int line, int& col) {
         bool ok = true;
         const char* Str = "";
@@ -172,7 +176,7 @@ struct Comp {
             ++p; ++col;
             int v = parseInt(p, col, NONE);
             if (v == NONE) v = 1;
-            if (v > 10) Str = E_RELVOL;
+            if ((unsigned)v > 10u) Str = E_RELVOL;                       // unsigned compare in the original: negative = error
             // '(' : op 150 when octDir<=0 else 151 ; ')' is the opposite
             bool a = (c.octDir <= 0) ? open : !open;
             put2(a ? 150 : 151, v);
@@ -220,7 +224,7 @@ struct Comp {
                 int n = parseInt(p, col, NONE);
                 comma(p, col);
                 int m = parseInt(p, col, NONE);
-                if (n > 0x40 || m < 1 || m > 100) Str = E_ENVEL;
+                if ((unsigned)n > 0x40u || m < 1 || m > 100) Str = E_ENVEL;
                 put3(165, n, m);
             }
             break;
@@ -260,7 +264,7 @@ struct Comp {
                 skipSp(p, col);
                 if (chain && *p == ',') { comma(p, col); v30 = parseInt(p, col, NONE); }
                 if (v32 < -128 || v32 > 127) { op += 2; v32 >>= 2; }
-                if (v31 > 4 || v29 < 1 || v29 > 100 || v32 < -128 || v32 > 127 || v30 > 100) Str = E_LFO;
+                if ((unsigned)v31 > 4u || v29 < 1 || v29 > 100 || v32 < -128 || v32 > 127 || (unsigned)v30 > 100u) Str = E_LFO;
                 put3(op, v31, v29);
                 put2(v32, v30);
             }
@@ -269,7 +273,7 @@ struct Comp {
         case 'P': {
             ++p; ++col;
             int v = parseInt(p, col, NONE);
-            if (v >= 8) Str = E_PORTA;
+            if ((unsigned)v >= 8u) Str = E_PORTA;
             put2(136, v);
             break;
         }
@@ -283,7 +287,7 @@ struct Comp {
                 hasComma = comma(p, col);
                 vol = parseInt(p, col, NONE);
             }
-            if (step >= 0x80 || vol < 1 || vol > 15 || !hasComma) Str = E_R;
+            if ((unsigned)step >= 0x80u || vol < 1 || vol > 15 || !hasComma) Str = E_R;
             put3(148, step, vol);
             break;
         }
@@ -370,7 +374,7 @@ struct Comp {
         case 'v': {
             ++p; ++col;
             int v = parseInt(p, col, NONE);
-            if (v >= 0x10) Str = E_VOLUME;
+            if ((unsigned)v >= 0x10u) Str = E_VOLUME;
             put2(128, v);
             break;
         }
@@ -379,7 +383,7 @@ struct Comp {
             int a = parseInt(p, col, NONE);
             bool cm = comma(p, col);
             int b = parseInt(p, col, NONE);
-            if (a >= 0x100 || b >= 0x100 || !cm) Str = E_Y;
+            if ((unsigned)a >= 0x100u || (unsigned)b >= 0x100u || !cm) Str = E_Y;
             put3(143, a, b);
             break;
         }
@@ -433,7 +437,9 @@ struct Comp {
                 }
                 int amount = (int16_t)(16 * (v16 - v10));
                 put(144); put16(amount);
-                int rate = (amount << 6) / len;
+                // The original divides here even when the length check above failed (len <= 0), which crashes the whole
+                // plugin with a division by zero.  The file is rejected either way (E_LEN), so skip the division.
+                int rate = (len != 0) ? (amount << 6) / len : 0;
                 if (rate > 0x7FFF || rate < -32767) Str = E_BENDW;
                 put16((int16_t)rate);
                 put16((int16_t)len);

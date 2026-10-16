@@ -16,9 +16,10 @@
 
 namespace opnmml {
 
-// EMPIRICAL CALIBRATION (not in the decompile): wuopn.cpp initialises the chip's output gain D(4) to 1024, but recordings
-// of the original plugin (PC-88 and X1 files, 25-28 s each) fit an FM level 1.93-1.98x higher with PSG unchanged (R^2 ~ 0.98).
-// A final FM gain of 2048 reproduces them (rms ratio 1.004, spread 0.011).  Set to 1024 for the value as decompiled.
+// FM output gain.  The chip's own constructor sets its output gain cell to 1024, but the mixer constructor then calls
+// a one-line chip method ("this[+0x10] = 2048", sub_100195B0) before selecting the chip type.  Hex-Rays mislabelled that
+// method as an anonymous library function and dropped its object, so the call is invisible in the decompile; it was
+// found by disassembling the DLL.  Without it the FM comes out half as loud as the original.
 static const int kFmOutputGain = 2048;
 
 class Mixer {
@@ -43,6 +44,11 @@ public:
     void setMute(unsigned mask) { mute = mask; }
     // Start `song` in sequencer slot 0..3 (the game plays background music in slot 3).  `song` must outlive playback.
     void play(int slot, const Song* song);
+    // Sub-millisecond phase of the sequencer timer (0 .. samples-per-millisecond * 256 - 1).  The original's audio thread is
+    // already running when a song starts, so its phase at that moment is arbitrary; this lets a recording be matched exactly.
+    void setTimerPhase(int phase) { acc = phase; }
+    int  timerPhaseRange() const { return spm256; }
+
     // Render `frames` stereo frames (interleaved L,R) to 16-bit.  Output beyond the 16-bit range is clipped.
     void render(int16_t* out, int frames);           // [sub_100233F0 / sub_100232E0]
     long clippedSamples() const { return clipped; }  // how many output samples have been clipped so far

@@ -39,10 +39,12 @@ static const char* kHelp =
 "  -r, --rate HZ          sample rate of the WAV file, 8000 to 192000.             Default: 44100\n"
 "\n"
 "  Advanced (for comparing against the original plugin):\n"
-"  -g, --fm-gain N        chip output gain, 1024 = x1.  Default 2048: the original plugin's FM output is twice\n"
-"                         what its own code suggests (see README.md).  Use 1024 for the value as decompiled.\n"
+"  -g, --fm-gain N        chip output gain, 1024 = x1.  Default 2048, which is what the original mixer sets after\n"
+"                         creating the chip (the chip's own default of 1024 is overridden).\n"
 "  -o, --total-offset N   value of the compiler's carrier total-level offset when the file has no '#total_offset'\n"
 "                         (internal value; the DLL uses 8).  Default: 8\n"
+"  -p, --phase N          starting phase of the sequencer's millisecond timer, 0 to 11288 at 44.1 kHz.  Default: 0.\n"
+"                         (The original's audio thread is already running when a song starts, so its phase is arbitrary.)\n"
 "  -s, --noise-seed N     seed of the random table behind noise and the random LFO.  Default: 1 (MSVC rand())\n"
 "  -b, --block N          frames rendered per engine call, 64 to 65536.  Default: 1024.  This does not change how the\n"
 "                         music sounds, but it moves note onsets by a few samples, which changes the waveform at the\n"
@@ -68,7 +70,7 @@ static void put16(FILE* f, uint16_t v) { fputc(v & 255, f); fputc((v >> 8) & 255
 int main(int argc, char** argv) {
     // ---- defaults ----
     double seconds = 60.0;
-    long rate = 44100, volume = 32, mute = 0, fmGain = 2048, totalOffset = 8, noiseSeed = 1, blockFrames = 1024;
+    long rate = 44100, volume = 32, mute = 0, fmGain = 2048, totalOffset = 8, noiseSeed = 1, blockFrames = 1024, timerPhase = 0;
     int device = -1;                      // -1 = from the file
     bool seedGiven = false;
     std::vector<const char*> files;
@@ -102,6 +104,8 @@ int main(int argc, char** argv) {
         } else if (cli::matchOption(argc, argv, i, "-s", "--noise-seed", val)) {
             NEED_VALUE("-s");  if (!cli::parseInt("-s", val, 0, 0x7FFFFFFFL, noiseSeed, "random table seed", "1")) return 2;
             seedGiven = true;
+        } else if (cli::matchOption(argc, argv, i, "-p", "--phase", val)) {
+            NEED_VALUE("-p");  if (!cli::parseInt("-p", val, 0, 1000000, timerPhase, "timer phase", "0")) return 2;
         } else if (cli::matchOption(argc, argv, i, "-b", "--block", val)) {
             NEED_VALUE("-b");  if (!cli::parseInt("-b", val, 64, 65536, blockFrames, "frames per engine call", "1024")) return 2;
         } else {
@@ -147,6 +151,8 @@ int main(int argc, char** argv) {
         return 2;
     }
     mx->setMute((unsigned)mute);
+    if (timerPhase >= mx->timerPhaseRange()) { fprintf(stderr, "error: option -p: %ld is too large for this sample rate (allowed 0..%d).\n", timerPhase, mx->timerPhaseRange() - 1); delete mx; return 2; }
+    mx->setTimerPhase((int)timerPhase);
     mx->play(3, &song);
 
     // ---- render, streaming straight to the file ----

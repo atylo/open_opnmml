@@ -1,7 +1,7 @@
 # opnmml - open-source player for the wuopn.dll `.mus` music format
 
-A from-scratch C++ port of the Kirikiri 2 plugin `wuopn.dll` (an "OPN MML decoder"): it reads `.mus` MML text files in
-non-standard or well-known syntax and renders them to audio, emulating the sound hardware of the PC-88 (YM2203 FM + PSG), Sharp X1 (YM2151 FM + PSG)
+A from-scratch C++ port of the Kirikiri 2 plugin `wuopn.dll` (an "OPN MML decoder"): it reads `.mus` MML text files
+and renders them to audio, emulating the sound hardware of the PC-88 (YM2203 FM + PSG), Sharp X1 (YM2151 FM + PSG)
 and MZ-2000 (PWM). It is written from the Hex-Rays decompile of the DLL, with its `.rdata` tables, and checked
 against recordings of the original plugin. No Kirikiri code or Windows API is needed.
 
@@ -19,7 +19,7 @@ against recordings of the original plugin. No Kirikiri code or Windows API is ne
 Options are `-x value` (letter, space, value only: `-v 40`, not `-v volume=40`); long forms `--volume 40` and
 `--volume=40` work too. Wrong or out-of-range values stop with an explanation and a non-zero exit status.
 
-## How it works (presumably)
+## How it works
 
     song.mus --compile()--> Song --Mixer::play()--> Sequencer --register writes--> Opx4 chip --> samples --> WAV
     (mmlcomp.cpp)                   (mixer.cpp)      (seq.cpp)                      (opx4.cpp)
@@ -37,28 +37,31 @@ Function names in comments such as `[sub_1001A6E0]` are the Hex-Rays names in `w
 against the decompile. The chip keeps the original's flat state layout (same dword numbers) on purpose; the names
 (`OP_PHASE`, `CH_FREQUENCY`...) are listed in `opx4.hpp`.
 
-## What has been verified (Mostly)
+## What has been verified
 
-* **Compiler and sequencer**: all register writes over 40 s were compared before and after every refactoring;
-  note timing matches the tick arithmetic of the DLL (e.g. 48 ticks at tempo 76 = 792 ms).
-* **Chip**: a differential fuzz test drove the renamed chip and its predecessor with random register writes in all six
-  chip modes (600 steps x 6 modes, byte-identical output), and unrestricted random writes (3000 steps x 6 modes) run
-  clean under AddressSanitizer/UBSan. Every table read is bounds-checked.
-* **Against the real plugin**: two recordings of the original (PC-88 and X1 files, 44.1 kHz). Pitch matches to four
-  digits, loop periods match, overall level 1.00 / 0.96, spectra track frame by frame (median correlation 0.77 / 0.85).
+Everything below was compared with the ORIGINAL `wuopn.dll` by running its own code in a CPU emulator,
+not only against recordings:
+
+* **Chip**: identical samples to the DLL's chip in all six chip modes (random register writes), and the whole internal
+  state identical after every command; both example songs identical for 6 s.
+* **Whole engine** (compiler + sequencer + chip + mixer): both example songs identical for 15 s on their own machine.
+* **Compiler**: 4,515 boundary-value programs and about 7,000 random programs give the same accept/reject verdict, error
+  line and compiled output (bytecode, tone and envelope tables) as the DLL's compiler.
+* **Random songs**: about 100 random songs using every bytecode command, on random devices (also combinations the game never
+  uses), give identical audio.
+* **Recordings of the original** (PC-88 and X1 files): pitch matches to four digits, loop periods match, overall level 1.00 / 0.96.
+* Sanitizer runs (AddressSanitizer/UBSan) and corrupted-input tests: no crashes.
 
 ## Known differences from the original
 
-1. **FM level calibration (not from the decompile).** The DLL sets the chip output gain to 1024, but recordings of the
-   original fit an FM level twice as high (PSG unchanged), in both OPN and OPM modes. `mixer.hpp` applies 2048
-   (`kFmOutputGain`); `mmlplay -g 1024` gives the value as decompiled. The cause is not yet known.
-2. PSG on PC-88 measures about 1.18x louder in the original; brightness above 1 kHz is about 20% higher in the original.
-3. The noise generators use the C runtime's `rand()`. This port reproduces MSVC's sequence with seed 1; the real seed
-   depends on what ran earlier in the game process (`-s` changes it).
-4. Output is sample-exact only for a given render block size (`-b`, default 1024): the 1 ms sequencer stepping inside a
-   block shifts note onsets by a few samples when the block size changes. It sounds the same.
-5. MZ/PWM mode is ported but untested against a recording. Chip modes 1-3 exist in the DLL but nothing in the game
-   selects them.
-6. A few oddities of the original are kept on purpose (see comments): e.g. OPN register 0x27 (channel-3 mode) never
+1. **Bugs of the original that are not copied.** A pitch bend on a note of length 0, a stray `]`, and a bend with no target
+   note make the original plugin crash or read past the line; this port rejects such files with an error.
+2. **Per-slot state.** The DLL keeps a slot's tone and envelope tables when another file is compiled into the same slot;
+   this port compiles each file from scratch (to be changed with the multi-song features, see TODO.md).
+3. Output is sample-exact only for a given render block size (`-b`, default 1024; the DLL's DirectSound path uses 128): the 1 ms
+   sequencer stepping inside a block shifts note onsets by a few samples when the block size changes. It sounds the same.
+4. In-game recordings show the PC-88 file's PSG about 1.18x louder than this engine produces. The engine itself is identical
+   to the DLL's, so the cause is outside it and still open.
+5. A few oddities of the original are kept on purpose (see comments): e.g. OPN register 0x27 (channel-3 mode) never
    takes effect, a trailing `//` comment on a channel line joins it to the next line, the amplitude LFO's delay is
    consumed by the first note.
