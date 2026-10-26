@@ -1,6 +1,6 @@
 // ============================================================================================================
-// Lookup tables of the wuopn.dll sound chip (COpx4).  Generated from the DLL's .rdata; every value was cross-checked
-// against the initialisers in the Hex-Rays output wherever those exist.  Included by opx4.cpp only.
+// Lookup tables of the original sound chip (COpx4).  Generated from the original's read-only data; every value was cross-checked
+// against the table initialisers in the original code wherever those exist.  Included by opx4.cpp only.
 //
 // "DLL address" notes give the original symbol so any table can be re-checked against the binary.
 // ============================================================================================================

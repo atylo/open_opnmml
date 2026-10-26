@@ -1,5 +1,5 @@
 // ================================================================================================================
-// Opx4 - port of the sound chip emulator ("COpx4") inside wuopn.dll.
+// Opx4 - port of the sound chip emulator ("COpx4") inside the original plugin.
 //
 // What it emulates
 //   * an FM synthesiser with 4 operators per channel: 8 channels / 32 operators (OPM, Sharp X1 - YM2151 style) or
@@ -12,7 +12,7 @@
 //
 // Fidelity note - the flat state image
 //   The original keeps ALL its state in one flat struct addressed as `this + N` dwords.  This port keeps exactly that
-//   layout (a flat int32 image with the same dword numbers as the Hex-Rays output) so every function can be compared
+//   layout (a flat int32 image with the same dword numbers as the original's `this + N` expressions) so every function can be compared
 //   line by line against the decompile.  Dword numbers are given names below (G_*, OP_*, CH_*).  Pointer fields of the
 //   original are stored as dword INDICES into the same image (so the code also works on a 64-bit host); G_DUMMY is
 //   an always-zero cell the original calls unk_1003DA74 and uses as "no modulation input / no output".
@@ -69,9 +69,12 @@ public:
     // Overall FM output gain, 1024 = x1.  The decompiled DLL uses 1024; see Mixer for the calibration actually applied.
     void setOutputGain(int g) { d[G_OUTPUT_GAIN] = g; }
 
+    // Read-only view of the flat state image (used by verify/chipscript.cpp to compare with the original).
+    const std::vector<int32_t>& stateImage() const { return d; }
+
 private:
     // ---------------------------------------------------------------------------------------------------------
-    // Layout of the state image (dword numbers, identical to the Hex-Rays `this + N` expressions)
+    // Layout of the state image (dword numbers, identical to the original's `this + N` expressions)
     // ---------------------------------------------------------------------------------------------------------
     enum Global {
         G_MODE            = 1,    // current chip type (enum Mode)

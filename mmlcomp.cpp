@@ -1,5 +1,5 @@
-// Faithful port of the wuopn.dll MML compiler stage.
-// Function names in comments are the IDA/Hex-Rays names from wuopn.cpp.
+// Faithful port of the original plugin's MML compiler stage.
+// Function names in comments (sub_XXXXXXXX) are the names of the original functions (address in the original).
 #include "mmlcomp.hpp"
 #include <cstdio>
 #include <cstring>
@@ -10,32 +10,33 @@ namespace {
 const int NONE = 987654;   // "number not present" sentinel used throughout the original
 
 // ---- messages (original text is Shift-JIS Japanese; English glosses here) ----
-const char* const E_LOOP_NEST   = "Loop nesting too deep.";
-const char* const E_LOOP_CMD    = "Loop command error.";
-const char* const E_REPEAT      = "Bad repeat count.";
-const char* const E_LOOP_ZERO   = "- Warning - loop body length is zero.";
-const char* const E_ATQ         = "Bad quantize (@q).";
-const char* const E_TONE_NO     = "Bad tone number.";
-const char* const E_DETUNE      = "Bad detune.";
-const char* const E_VOLUME      = "Bad volume.";
-const char* const E_RELVOL      = "Bad relative volume.";
-const char* const E_R           = "Bad R command. (step,volume)";
-const char* const E_LFO         = "LFO command error";
-const char* const E_ENVEL       = "Bad volume envelope. (no,step)";
-const char* const E_FADE        = "Bad fade-out.";
-const char* const E_PAN         = "Bad pan.";
-const char* const E_TEMPO       = "Bad tempo.";
-const char* const E_PORTA       = "Bad portamento.";
-const char* const E_INFLOOP_IN  = "Infinite-loop command not allowed inside a loop.";
-const char* const E_Y           = "Bad Y command.";
-const char* const E_TRANSPOSE   = "Transpose out of range.";
-const char* const E_QUANT       = "Bad quantize.";
-const char* const E_LEN         = "Bad note length.";
-const char* const E_SYNTAX      = "Syntax Error.";
-const char* const E_PITCH       = "Bad pitch.";
-const char* const E_BEND        = "Bad bend.";
-const char* const E_BENDW       = "Bend width too large.";
-const char* const E_OCTAVE      = "Octave out of range (valid octaves are 0-7; the original message said 1-8).";
+const char* const E_LOOP_NEST = "Loops are nested too deeply (at most 5 levels).";
+const char* const E_LOOP_CMD = "'/' or ']' without a matching '['.";
+const char* const E_REPEAT = "Repeat count out of range (valid 1-127).";
+const char* const E_LOOP_ZERO = "The loop body has zero length (it needs at least one note or rest).";
+const char* const E_ATQ = "Quantize @q out of range (valid 1-127).";
+const char* const E_TONE_NO = "Tone number out of range (valid 1-127).";
+const char* const E_DETUNE = "Detune out of range (valid -8192 to 8192).";
+const char* const E_VOLUME = "Volume out of range (valid 0-15).";
+const char* const E_RELVOL = "Relative volume out of range (valid 0-10).";
+const char* const E_R = "Bad R command: expected R step,volume (step 0-127, volume 1-15) or ROF.";
+const char* const E_LFO = "Bad LFO command: expected MP or MA followed by type,period,depth[,delay] (type 0-4, period 1-100, depth -512 to 511, delay 0-100), or MPOF / MAOF.";
+const char* const E_ENVEL = "Bad volume envelope command: expected EA number,speed (number 0-64, speed 1-100) or EAOF.";
+const char* const E_FADE = "Fade-out out of range (valid 1-255).";
+const char* const E_PAN = "Pan out of range (valid 1-3).";
+const char* const E_TEMPO = "Tempo out of range (valid 1-255).";
+const char* const E_PORTA = "Portamento out of range (valid 0-7).";
+const char* const E_INFLOOP_IN = "The song loop point L cannot be inside a [ ] loop.";
+const char* const E_Y = "Bad y command: expected y register,value (both 0-255).";
+const char* const E_TRANSPOSE = "Transpose out of range (valid -64 to 64).";
+const char* const E_QUANT = "Quantize out of range (valid 1-8).";
+const char* const E_LEN = "Note length out of range (valid 1-16000 ticks).";
+const char* const E_SYNTAX = "Unknown command.";
+const char* const E_PITCH = "Note pitch out of range (octave, accidentals and transpose must give a note from 1 to 95).";
+const char* const E_BEND = "A pitch bend (note_target) cannot start from a rest.";
+const char* const E_BENDW = "The pitch bend is too wide for the note length.";
+const char* const E_KEYSIG      = "Bad key signature: expected $SHARP{...} or $FLAT{...} containing only the note letters c d e f g a b.";
+const char* const E_OCTAVE = "Octave out of range (valid 0-7).";
 
 // ---- tone parameter table (rdata 0x1002F2E0: name,min,max,shift) ----
 struct PDef { const char* name; int mn, mx, sh; };
@@ -122,19 +123,27 @@ struct Comp {
     void put3(int a, int b, int c) { put(a); put(b); put(c); }
     void put16(int v)          { put((v >> 8) & 0xFF); put(v & 0xFF); }
 
-    void fail(const char* msg, int line) {
-        char buf[512];
-        snprintf(buf, sizeof buf, "line %d: %s", line, msg);
+    // Position helpers: lineStart is the start of the channel-line text being compiled (the line's first character).
+    const char* lineStart = nullptr;
+    int columnAt(const char* q) const { return lineStart ? (int)(q - lineStart) + 1 : 0; }
+
+    // Record a compile error.  line/column are 1-based, 0 = unknown.
+    void fail(const char* msg, int line, int column = 0) {
+        S.errorLine = line; S.errorColumn = column; S.errorMessage = msg;
+        char buf[600];
+        if (line > 0 && column > 0)  snprintf(buf, sizeof buf, "line %d, column %d: %s", line, column, msg);
+        else if (line > 0)           snprintf(buf, sizeof buf, "line %d: %s", line, msg);
+        else                         snprintf(buf, sizeof buf, "%s", msg);
         S.error = buf;
     }
 
     // sub_1001C170 : $SHARP{...} / $FLAT{...}
     bool keySig(const char*& p, int line, int& col) {
-        (void)line;
+        const char* sigStart = p;
         int accidental = 0;
         if (strncmp(p, "$SHARP{", 6) == 0)      { p += 7; col += 7; accidental = 1; }
         else if (strncmp(p, "$FLAT{", 5) == 0)  { p += 6; col += 6; accidental = -1; }
-        else { S.error = "$SHARP/$FLAT"; return false; }
+        else { fail(E_KEYSIG, line, columnAt(sigStart)); return false; }
         static const int nat[7] = {0, 2, 4, 5, 7, 9, 11};
         for (int i = 0; i < 7; i++) C().keysig[i] = nat[i];
         skipSp(p, col);
@@ -151,7 +160,7 @@ struct Comp {
             skipSp(p, col);
         }
         if (*p == '}') { ++p; ++col; return true; }
-        S.error = "$SHARP/$FLAT";
+        fail(E_KEYSIG, line, columnAt(sigStart));
         return false;
     }
 
@@ -164,6 +173,7 @@ struct Comp {
         int note = -1;
         Channel& c = C();
         skipSp(p, col);
+        const char* cmdStart = p;                           // for the column of an error message
         switch (*p) {
         case '$':
             ok = keySig(p, line, col);
@@ -184,7 +194,7 @@ struct Comp {
         }
         case '/': {
             ++p; ++col;
-            if (c.depth <= 0) { fail(E_LOOP_CMD, line); return false; }
+            if (c.depth <= 0) { fail(E_LOOP_CMD, line, columnAt(cmdStart)); return false; }
             put3(193, 0, 0);
             LoopFrame& f = c.loops[c.depth - 1];
             f.brk = (int)c.code.size();
@@ -240,6 +250,7 @@ struct Comp {
             ++p; ++col;
             put(207);
             c.loopPoint = c.totalTicks;
+            c.loopPointLine = line; c.loopPointColumn = columnAt(cmdStart);
             if (c.depth != 0) Str = E_INFLOOP_IN;
             break;
         case 'M': {
@@ -300,18 +311,19 @@ struct Comp {
         }
         case '[': {
             ++p; ++col;
-            if (c.depth >= 5) { fail(E_LOOP_NEST, line); return false; }
+            if (c.depth >= 5) { fail(E_LOOP_NEST, line, columnAt(cmdStart)); return false; }
             put2(192, 0);
             LoopFrame& f = c.loops[c.depth++];
             f.start = (int)c.code.size();
             f.brk = 0; f.ticks = 0; f.brkTicks = 0;
+            f.line = line; f.column = columnAt(cmdStart);
             break;
         }
         case ']': {
             ++p; ++col;
             int n = parseInt(p, col, NONE);
             if (n == NONE) n = 2;
-            if (c.depth <= 0) { fail(E_LOOP_CMD, line); return false; }
+            if (c.depth <= 0) { fail(E_LOOP_CMD, line, columnAt(cmdStart)); return false; }
             if (n < 1 || n > 127) Str = E_REPEAT;
             --c.depth;
             LoopFrame& f = c.loops[c.depth];
@@ -467,12 +479,13 @@ struct Comp {
         }
 
         if ((unsigned)(int16_t)C().octave >= 8) Str = E_OCTAVE;
-        if (*Str) { fail(Str, line); return false; }
+        if (*Str) { fail(Str, line, columnAt(cmdStart)); return false; }
         return ok;
     }
 
     // sub_10021CA0 : one channel line.  Returns true on ERROR (matches the original).
     bool channelLine(const char* a2, int line) {
+        lineStart = a2;
         const char* p = a2;
         int col = 0;
         int nch = S.x1Mode ? 11 : 6;
@@ -496,9 +509,9 @@ struct Comp {
             }
             return i != n;
         }
-        char buf[128];
-        snprintf(buf, sizeof buf, "Bad channel header [A-%c] %d", nch + 'A' - 1, line);
-        S.error = buf;
+        char buf[200];
+        snprintf(buf, sizeof buf, "Bad channel header: a channel line must start with channel letters A-%c (this dialect has %d channels), then a space or tab.", nch + 'A' - 1, nch);
+        fail(buf, line, columnAt(p));
         return true;
     }
 
@@ -514,20 +527,18 @@ struct Comp {
         if (*p == 'e' || *p == 'E') { env = true; ++p; skipWs(p, col); }
         int num = parseInt(p, col, NONE);
         if (env) {
-            if (num < 1 || num >= 64) { snprintf(msg, sizeof msg, "Envelope number out of range (1-63), near line %d", line); S.error = msg; return true; }
+            if (num < 1 || num >= 64) { fail("Envelope number out of range (valid 1-63).", line); return true; }
         } else if ((unsigned)num >= 0x80) {
-            snprintf(msg, sizeof msg, "Tone number out of range (0-127), near line %d", line); S.error = msg; return true;
+            fail("Tone number out of range (valid 0-127).", line); return true;
         }
         skipWs(p, col);
         if (env && comma(p, col)) { loopIndex = parseInt(p, col, NONE); skipWs(p, col); }
         if (*p != '=') {
-            snprintf(msg, sizeof msg, env ? "Bad envelope definition (1-63), near line %d" : "Bad tone number definition (0-127), near line %d", line);
-            S.error = msg; return true;
+            fail(env ? "Bad envelope definition: expected '=' after the envelope number, as in @e3={...}." : "Bad tone definition: expected '=' after the tone number, as in @3={...}.", line); return true;
         }
         ++p; skipWs(p, col);
         if (*p != '{') {
-            snprintf(msg, sizeof msg, env ? "Bad envelope definition (1-63), near line %d" : "Bad tone number definition (0-127), near line %d", line);
-            S.error = msg; return true;
+            fail(env ? "Bad envelope definition: expected '{' after '='." : "Bad tone definition: expected '{' after '='.", line); return true;
         }
         ++p; skipWs(p, col);
         values[count] = parseInt(p, col, NONE);
@@ -539,7 +550,7 @@ struct Comp {
             values[count] = parseInt(p, col, NONE);
         }
         if (env) {
-            if (count < 1 || count >= 64) { snprintf(msg, sizeof msg, "Envelope entry count out of range (1-63), near line %d", line); S.error = msg; return true; }
+            if (count < 1 || count >= 64) { snprintf(msg, sizeof msg, "An envelope needs 1 to 63 values; found %d.", count); fail(msg, line); return true; }
             Envelope& e = S.envs[num];
             e.count = (int16_t)count;
             if (loopIndex < 0) loopIndex = count - 1;
@@ -551,7 +562,8 @@ struct Comp {
         int carrierOffset[32];
         for (int j = 0; j < 32; j++) carrierOffset[j] = (CARRIER[j] ? S.totalOffset : 0) + CARRIER[j];
         if (count < 4 * valuesPerOp + 2 || count > 4 * valuesPerOp + 4) {
-            snprintf(msg, sizeof msg, "Tone parameter count out of range, near line %d", line); S.error = msg; return true;
+            snprintf(msg, sizeof msg, "A tone in this dialect needs %d to %d values (4 operators x %d values, then 2 to 4 channel values); found %d.", 4 * valuesPerOp + 2, 4 * valuesPerOp + 4, valuesPerOp, count);
+            fail(msg, line); return true;
         }
         static const int x1ParamOrder[11] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 9};
         for (int k = 0; k < 4; k++) {
@@ -559,8 +571,8 @@ struct Comp {
                 int ti = S.x1Mode ? x1ParamOrder[mm] : mm;
                 int& v = values[mm + valuesPerOp * k];
                 if (v < PT[ti].mn || v > PT[ti].mx) {
-                    snprintf(msg, sizeof msg, "Tone parameter [%s] out of range (%d..%d), near line %d", PT[ti].name, PT[ti].mn, PT[ti].mx, line);
-                    S.error = msg; return true;
+                    snprintf(msg, sizeof msg, "Tone parameter %s of operator %d out of range (valid %d to %d).", PT[ti].name, k + 1, PT[ti].mn, PT[ti].mx);
+                    fail(msg, line); return true;
                 }
                 if (strcmp(PT[ti].name, "DT") == 0 && v < 0) { v = -v; v ^= 4; }
                 v <<= PT[ti].sh;
@@ -570,8 +582,8 @@ struct Comp {
             int& v = values[4 * valuesPerOp + k];
             const PDef& d = PT[11 + k];
             if (v < d.mn || v > d.mx) {
-                snprintf(msg, sizeof msg, "Tone parameter [%s] out of range (%d..%d), near line %d", d.name, d.mn, d.mx, line);
-                S.error = msg; return true;
+                snprintf(msg, sizeof msg, "Tone channel parameter %s out of range (valid %d to %d).", d.name, d.mn, d.mx);
+                fail(msg, line); return true;
             }
             v <<= d.sh;
         }
@@ -597,14 +609,15 @@ struct Comp {
         bool ok = true;
         for (int i = 0; i < 11; i++) S.ch[i].code.push_back(0);
         for (int j = 0; j < 11; j++) {
-            char m[128];
-            if (S.ch[j].depth != 0) {
-                snprintf(m, sizeof m, "Channel %c: loop is not closed.", j + 'A');
-                S.error = m; ok = false;
+            char m[200];
+            if (S.ch[j].depth != 0) {                         // point at the innermost '[' that was never closed
+                const LoopFrame& lf = S.ch[j].loops[S.ch[j].depth - 1];
+                snprintf(m, sizeof m, "Channel %c: this '[' is never closed with ']'.", j + 'A');
+                fail(m, lf.line, lf.column); ok = false;
             }
-            if (S.ch[j].totalTicks == S.ch[j].loopPoint) {
-                snprintf(m, sizeof m, "Channel %c: infinite loop count is zero.", j + 'A');
-                S.error = m; ok = false;
+            if (S.ch[j].totalTicks == S.ch[j].loopPoint) {    // nothing is played after the song loop point
+                snprintf(m, sizeof m, "Channel %c: nothing follows the song loop point L, so it would loop forever without playing anything.", j + 'A');
+                fail(m, S.ch[j].loopPointLine, S.ch[j].loopPointColumn); ok = false;
             }
         }
         return ok;
@@ -671,19 +684,19 @@ struct Comp {
             case 6:
                 if (prefixI("x", cur - 1)) { for (auto& c : S.ch) c.octDir = -1; }
                 else if (prefixI("n", cur - 1)) { for (auto& c : S.ch) c.octDir = 1; }
-                else { char m[64]; snprintf(m, sizeof m, "Pseudo-command error, line %d", line); S.error = m; stop = true; }
+                else { fail("#octave expects n (normal) or x (reversed).", line, col - 1); stop = true; }
                 while (*cur != 0 && *cur != '\n') { ++cur; ++col; }
                 c = *cur++; ++col; st = 0;
                 break;
             case 7:
-                while (*cur != 0 && *cur != '\n' && (c != '"' || *cur != '"')) { S.title.push_back(*cur++); ++col; }
+                while (*cur != 0 && *cur != '\n' && (c != '"' || *cur != '"')) { S.songs[S.lastNum].title.push_back(*cur++); ++col; }
                 c = *cur++; ++col; st = 0;
                 break;
             case 8:
                 if (prefixI("x1", cur - 1))        { S.x1Mode = true;  S.machine = M_X1; }
                 else if (prefixI("pc88", cur - 1)) { S.x1Mode = false; S.machine = M_PC88; }
                 else if (prefixI("mz", cur - 1))   { S.x1Mode = false; S.machine = M_MZ; }
-                else { char m[64]; snprintf(m, sizeof m, "Pseudo-command error, line %d", line); S.error = m; stop = true; }
+                else { fail("#machine expects pc88, x1 or mz.", line, col - 1); stop = true; }
                 while (*cur != 0 && *cur != '\n') { ++cur; ++col; }
                 c = *cur++; ++col; st = 0;
                 break;
@@ -691,8 +704,7 @@ struct Comp {
                 --cur;
                 int offset = parseInt(cur, col, NONE);
                 if (offset > 100 || offset < -8) {
-                    char m[96]; snprintf(m, sizeof m, "Pseudo-command error, line %d: total_offset must be -8..100.", line);
-                    S.error = m; stop = true;
+                    fail("#total_offset expects a whole number from -8 to 100.", line, col - 1); stop = true;
                 }
                 S.totalOffset = offset + 8;
                 while (*cur != 0 && *cur != '\n') { ++cur; ++col; }
@@ -713,10 +725,44 @@ struct Comp {
 
 int Song::defaultTotalOffset = 8;
 
+std::string Song::describeError(const char* file) const {
+    char buf[900];
+    if (errorLine > 0 && errorColumn > 0) snprintf(buf, sizeof buf, "%s:%d:%d: error: %s", file, errorLine, errorColumn, errorMessage.c_str());
+    else if (errorLine > 0)               snprintf(buf, sizeof buf, "%s:%d: error: %s", file, errorLine, errorMessage.c_str());
+    else                                  snprintf(buf, sizeof buf, "%s: error: %s", file, errorMessage.empty() ? error.c_str() : errorMessage.c_str());
+    return buf;
+}
+
+void Song::clearAll() {                                      // sub_1001DA20
+    Song fresh;
+    fresh.machine = M_PC88;
+    *this = fresh;
+}
+
+bool compile(const char* text, Song& slot, int num) {
+    if (num < 0) num = 0; else if (num > 63) num = 63;       // sub_1001D7D0 clamps
+    Song work = slot;                                        // compile into a copy: a failed file must not damage the slot
+    // sub_1001D7D0: start of a compile
+    work.lastNum = num;
+    work.songs[num].title.clear();                           // (the original clears the wrong string, see DESIGN.md)
+    work.totalOffset = Song::defaultTotalOffset;
+    work.x1Mode = false; work.machine = M_PC88;
+    work.errorLine = work.errorColumn = 0; work.errorMessage.clear(); work.error.clear();
+    for (int i = 0; i < 11; i++) {
+        work.songs[num].start[i] = (int)work.ch[i].code.size();
+        work.ch[i].resetCompileState();
+    }
+    Comp c(work);
+    bool ok = c.run(text);
+    if (ok) { work.loaded[num] = true; slot = std::move(work); return true; }
+    slot.errorLine = work.errorLine; slot.errorColumn = work.errorColumn;
+    slot.errorMessage = work.errorMessage; slot.error = work.error;
+    return false;
+}
+
 bool compile(const char* text, Song& out) {
-    out = Song();
-    Comp c(out);
-    return c.run(text);
+    out.clearAll();
+    return compile(text, out, 0);
 }
 
 }  // namespace opnmml

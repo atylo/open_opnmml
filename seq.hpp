@@ -1,4 +1,4 @@
-// Port of the wuopn.dll sequencer: CSoundSeqCh (sub_1001EAF0 & co) and CSoundSequencer (sub_10022780).
+// Port of the original plugin's sequencer: CSoundSeqCh (sub_1001EAF0 & co) and CSoundSequencer (sub_10022780).
 // It consumes the bytecode produced by mmlcomp and drives a chip through register writes.
 #pragma once
 #include "mmlcomp.hpp"
@@ -66,8 +66,17 @@ struct SeqCh {                                   // CSoundSeqCh, 0x68 bytes in t
 class Sequencer {                                // CSoundSequencer
 public:
     Sequencer(IChip* chip);
-    void load(const Song* song);                 // song data (tones, envelopes, bytecode)
-    void start();                                // sub_1001C620(0) : start song 0 on all channels
+    void load(const Song* song);                 // the slot's song storage (tones, envelopes, bytecode); must outlive the sequencer
+    // Start song `num` (clamped to 0..63) on all channels.                                        [sub_1001C620]
+    // Like the original: a number that was never compiled starts at offset 0 of the channel code, i.e. it plays the
+    // FIRST song compiled into the slot (silence when the slot is empty).  Check Song::songs / the Mixer if that matters.
+    void start(int num = 0);
+    // Begin the quick fade-out used by OPNStopSE (about 0.26 s, the channels are cut when it is over).  Returns true when
+    // some channel was still active.                                                              [sub_1001C5C0]
+    bool stop();
+    // Stop everything at once and rebind the channel data (the code vectors may have moved after a compile): all
+    // channels idle, tempo 120, fade cleared.  Call after every compile.                          [sub_1001C4D0]
+    void reset();
     void tick(unsigned& mask);                   // sub_10022780 : one 1 kHz step
     void setTempo(int bpm);                      // sub_1001BE50
     void setFade(int v);                         // sub_1001BD90

@@ -12,16 +12,27 @@ static int checkedRate(int r) {
 Mixer::Mixer(int r) : rate(checkedRate(r)), spm256((r << 8) / 1000), opx(r, 4000000) {
     opx.setMode(0);
     opx.setOutputGain(kFmOutputGain);
-    for (int i = 0; i < 4; i++) seq[i] = new Sequencer(&opx);
+    for (int i = 0; i < 4; i++) { seq[i] = new Sequencer(&opx); seq[i]->load(&slots[i]); }
+    resetAll();
 }
 Mixer::~Mixer() { for (int i = 0; i < 4; i++) delete seq[i]; }
 
-void Mixer::setDevice(int dev) {
+void Mixer::stopAndReset(int slot) {                 // sub_10022C80
+    seq[slot]->stop();
+    seq[slot]->reset();
+}
+
+void Mixer::resetAll() {                             // sub_10022DF0
+    for (int i = 0; i < 4; i++) { stopAndReset(i); slots[i].clearAll(); seq[i]->reset(); }   // (last reset rebinds the emptied vectors)
+}
+
+bool Mixer::setDevice(int dev) {
+    resetAll();
     switch (dev) {
-    case 4: opx.setMode(0); break;
-    case 5: opx.setMode(4); break;
-    case 6: opx.setMode(5); break;
-    default: break;
+    case 4: opx.setMode(0); return true;
+    case 5: opx.setMode(4); return true;
+    case 6: opx.setMode(5); return true;
+    default: return false;
     }
 }
 
@@ -30,10 +41,45 @@ void Mixer::setVolume(int v) {
     gain = (int)(std::pow(2.0, (double)v * -0.0375) * 256.0);
 }
 
-void Mixer::play(int slot, const Song* song) {
-    if (slot < 0 || slot > 3 || !song) return;
-    seq[slot]->load(song);
-    seq[slot]->start();
+bool Mixer::loadSong(int slot, int num, const char* text, bool play) {
+    if (slot < 0 || slot > 3) { lastErr = "slot must be 0 to 3"; return false; }
+    stopAndReset(slot);
+    bool ok = compile(text, slots[slot], num);
+    stopAndReset(slot);                              // the code vectors may have moved: rebind
+    if (!ok) { lastErr = slots[slot].error; return false; }
+    lastErr.clear();
+    if (play) playSong(slot, num);
+    return true;
+}
+
+void Mixer::playSong(int slot, int num) {
+    if (slot < 0 || slot > 3) return;
+    seq[slot]->start(num);
+}
+
+void Mixer::stopSlot(int slot) {
+    if (slot < 0 || slot > 3) return;
+    seq[slot]->stop();
+}
+
+const std::string& Mixer::songTitle(int slot, int num) const {
+    static const std::string none;
+    if (slot < 0 || slot > 3) return none;
+    return slots[slot].titleOf(num);
+}
+
+bool Mixer::songLoaded(int slot, int num) const {
+    if (slot < 0 || slot > 3) return false;
+    if (num < 0) num = 0; else if (num > 63) num = 63;
+    return slots[slot].loaded[num];
+}
+
+int Mixer::tempo(int slot) const { return (slot < 0 || slot > 3) ? -1 : seq[slot]->tempo; }
+
+bool Mixer::setTempo(int slot, int bpm) {
+    if (slot < 0 || slot > 3 || bpm <= 0) return false;
+    seq[slot]->setTempo(bpm);
+    return true;
 }
 
 void Mixer::step(int n) {

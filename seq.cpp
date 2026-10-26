@@ -1,5 +1,5 @@
 // ================================================================================================================
-// Sequencer - port of wuopn.dll's bytecode player (classes CSoundSeqCh and CSoundSequencer).
+// Sequencer - port of the original plugin's bytecode player (classes CSoundSeqCh and CSoundSequencer).
 //
 // The MML compiler (mmlcomp.cpp) turns each channel of a song into a byte stream.  This file plays those streams:
 //   * Sequencer::tick() runs once per MUSICAL tick (48 per quarter note); the mixer calls step1ms() every millisecond
@@ -14,7 +14,7 @@
 //   0x94 RELEASE_FADE  0x95 FADE_OUT  0x96/0x97 VOLUME_UP/DOWN  0x98-0x9A PAN  0xA0-0xA3 LFOs  0xA5 VOLUME_ENVELOPE
 //   0xC0 LOOP_BEGIN  0xC1 LOOP_BREAK  0xC2 LOOP_END  0xCF SONG_LOOP_POINT
 //
-// Function names in comments (sub_XXXXXXXX) are the Hex-Rays names in wuopn.cpp.
+// Function names in comments (sub_XXXXXXXX) are the names of the original functions (address in the original).
 // ================================================================================================================
 #include "seq.hpp"
 #include "tables.inc"
@@ -399,9 +399,9 @@ Sequencer::Sequencer(IChip* c) : chip(c) {
 void Sequencer::load(const Song* s) { song = s; }
 
 void Sequencer::setTempo(int bpm) {                          // sub_1001BE50
-    if (bpm <= 0) return;                                    // original would divide by zero
+    if (bpm <= 0) return;                                    // original would divide by zero (0) or run backwards (<0)
     tempo = bpm;
-    timerStep = 49152 * bpm / 60 / 1000;
+    timerStep = (int)((uint32_t)bpm * 49152u) / 60 / 1000;   // 32-bit wrap-around like the original's imul
 }
 
 void Sequencer::setFade(int v) {                             // sub_1001BD90
@@ -409,17 +409,37 @@ void Sequencer::setFade(int v) {                             // sub_1001BD90
     fadeStep = 256 - v;
 }
 
-void Sequencer::start() {                                    // sub_1001C620(0)
+void Sequencer::reset() {                                    // sub_1001C4D0
+    for (int i = 0; i < 11; i++) {
+        ch[i].reset();
+        const std::vector<uint8_t>& code = song->ch[i].code;
+        if (!code.empty()) ch[i].setData(code.data(), code.size(), 0);
+        else               ch[i].setData(nullptr, 0, 0);
+    }
+    counter = 0; fadeStep = 0; fadeAcc = 0; masterAtten = 0; timerAcc = 0; lastMask = 0;
+    setTempo(120);
+}
+
+bool Sequencer::stop() {                                     // sub_1001C5C0
+    bool any = false;
+    for (int i = 0; i < 11; i++) if (ch[i].active()) any = true;
+    setFade(16);
+    return any;
+}
+
+void Sequencer::start(int num) {                             // sub_1001C620
+    if (num < 0) num = 0; else if (num > 63) num = 63;
     fadeStep = 0; fadeAcc = 0;
     for (int i = 0; i < 11; i++) {
         ch[i].reset();
         const std::vector<uint8_t>& code = song->ch[i].code;
-        if (code.empty()) ch[i].setData(nullptr, 0, 0);
-        else              ch[i].setData(code.data(), code.size(), 0);
+        int start = song->songs[num].start[i];
+        if (code.size() <= (size_t)start) ch[i].setData(nullptr, 0, 0);
+        else                              ch[i].setData(code.data(), code.size(), start);
     }
     counter = 0; fadeStep = 0; fadeAcc = 0; masterAtten = 0; timerAcc = 0; lastMask = 0;
     setTempo(120);
-    for (int i = 0; i < 11; i++) if (!song->ch[i].code.empty()) ch[i].state = 4;   // sub_1001C050
+    for (int i = 0; i < 11; i++) if (!song->ch[i].code.empty()) ch[i].state = 4;   // sub_1001C050: any NON-EMPTY vector
 }
 
 void Sequencer::tick(unsigned& mask) {                       // sub_10022780

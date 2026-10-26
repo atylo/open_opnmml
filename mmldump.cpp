@@ -97,9 +97,9 @@ int main(int argc, char** argv) {
     std::string text;
     if (!cli::readFile(path, text)) return 1;
     static Song s;
-    if (!compile(text.c_str(), s)) { fprintf(stderr, "error: %s: MML error: %s\n", path, s.error.c_str()); return 1; }
+    if (!compile(text.c_str(), s)) { fprintf(stderr, "%s\n", s.describeError(path).c_str()); return 1; }
 
-    printf("title: %s\nmachine: %s\ntotal_offset (internal, n+8): %d\n", s.title.c_str(),
+    printf("title: %s\nmachine: %s\ntotal_offset (internal, n+8): %d\n", s.titleOf(0).c_str(),
            s.machine == M_X1 ? "x1" : s.machine == M_MZ ? "mz" : "pc88", s.totalOffset);
     for (int n = 0; n < 128; n++) if (s.toneDefined[n]) {
         printf("tone %d:", n);

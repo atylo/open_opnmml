@@ -1,4 +1,4 @@
-// Note-pitch tables for the sequencer (included by seq.cpp).  Extracted from wuopn.dll .rdata.
+// Note-pitch tables for the sequencer (included by seq.cpp).  Extracted from the original's read-only data.
 //
 // kOpnFnumTable   : OPN F-number for each of the 192 pitch steps of one octave (16 steps per semitone), 617..1230.
 //                   The sequencer ORs in (octave << 11) to build the value written to registers 0xA4/0xA0.

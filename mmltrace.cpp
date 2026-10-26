@@ -101,7 +101,7 @@ int main(int argc, char** argv) {
     std::string text;
     if (!cli::readFile(path, text)) return 1;
     static Song song;
-    if (!compile(text.c_str(), song)) { fprintf(stderr, "error: %s: MML error: %s\n", path, song.error.c_str()); return 1; }
+    if (!compile(text.c_str(), song)) { fprintf(stderr, "%s\n", song.describeError(path).c_str()); return 1; }
 
     TraceChip chip(song.machine);
     chip.hideRepeats = !all;

@@ -1,5 +1,5 @@
 // ================================================================================================================
-// MML compiler - port of the compiler inside wuopn.dll (sub_10021E90 and the functions it calls).
+// MML compiler - port of the compiler inside the original plugin (sub_10021E90 and the functions it calls).
 //
 // Input : the text of a .mus file (Shift-JIS or ASCII).   Output: a Song = FM tone definitions, volume envelopes and
 // one bytecode stream per channel, ready for the sequencer (seq.hpp).  Depends only on the C++ standard library.
@@ -47,7 +47,7 @@ struct Envelope {             // this+4876+132*n : count, loop index, up to 63 w
     int16_t v[64] = {0};
 };
 
-struct LoopFrame { int start = 0, brk = 0, ticks = 0, brkTicks = 0; };
+struct LoopFrame { int start = 0, brk = 0, ticks = 0, brkTicks = 0; int line = 0, column = 0; /* where the '[' is, for error messages */ };
 
 struct Channel {              // compile state (156-byte record at this+16740+156*ch) + output
     int16_t octave = 4, octDir = 1, defLen = 48, quant = 8;
@@ -57,11 +57,30 @@ struct Channel {              // compile state (156-byte record at this+16740+15
     int     loopPoint = -1;
     int     transpose = 0;
     LoopFrame loops[5];
-    std::vector<uint8_t> code;
+    int     loopPointLine = 0, loopPointColumn = 0;   // where the 'L' (song loop point) is, for error messages
+    std::vector<uint8_t> code;   // PERSISTENT: every song compiled into the slot appends here (see Song::songs)
+    // What sub_1001D7D0 resets at the start of every compile (everything except `code`).
+    void resetCompileState() {
+        octave = 4; octDir = 1; defLen = 48; quant = 8;
+        static const int nat[7] = {0, 2, 4, 5, 7, 9, 11};
+        for (int i = 0; i < 7; i++) keysig[i] = nat[i];
+        depth = 0; totalTicks = 0; loopPoint = -1; transpose = 0;
+    }
 };
 
-struct Song {
+// One song number (0..63) inside a slot: where each channel's code starts in Channel::code, and the title.
+struct SongEntry {
+    int start[11] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};   // dword 67 + 11*num + ch of the slot object (0 = never compiled)
     std::string title;
+};
+
+// A Song is the storage of ONE sequencer slot (the DLL's CSoundSequencer object): up to 64 songs, numbered 0..63,
+// that share FM tone definitions, volume envelopes and one growing bytecode vector per channel.  compile() APPENDS
+// a song; tones and envelopes of earlier songs stay and can be used (or overwritten) by later ones.
+struct Song {
+    SongEntry songs[64];
+    bool loaded[64] = {false};   // song number was compiled successfully since the last clearAll()
+    int  lastNum     = 0;       // song number of the most recent compile (this+18464)
     int  machine     = M_PC88;
     bool x1Mode      = false;   // this+18468 : 11 channels A-K, 11-value operators
     // Internal value of the carrier total-level offset when the file has no #total_offset line.  The DLL stores
@@ -72,10 +91,24 @@ struct Song {
     bool     toneDefined[128] = {false};
     Envelope envs[64];
     Channel  ch[11];
-    std::string error;          // set when compile() fails: "line N: message"
+    // Filled in when compile() fails.  line/column are 1-based; 0 = unknown.
+    int         errorLine = 0, errorColumn = 0;
+    std::string errorMessage;   // the English message alone
+    std::string error;          // message with its position, e.g. "line 12, column 5: Volume out of range (valid 0-15)."
+    // Title of song `num` (clamped to 0..63 like the DLL).
+    const std::string& titleOf(int num) const { return songs[num < 0 ? 0 : num > 63 ? 63 : num].title; }
+    // Forget every song, tone, envelope and all code (sub_1001DA20, what OPNSetDevice does to every slot).
+    void clearAll();
+    // Compiler-style one-liner:  "file:12:5: error: message"   (the column or the line is left out when unknown)
+    std::string describeError(const char* file) const;
 };
 
-// Returns true on success.  On failure Song::error describes the problem, e.g. "line 12: Bad volume."
+// Compile `text` as song `num` of the slot `slot` (what OPNPlaySE does, sub_10023060 without the stop/reset around it).
+// num is clamped to 0..63.  The new code is appended to the slot's channel vectors; tones and envelopes are kept from
+// earlier songs.  Returns true on success.  On failure the slot is left EXACTLY as it was before the call (the original
+// leaves half-compiled code and half-defined tones behind) and slot.error / errorLine / errorColumn describe the problem.
+bool compile(const char* text, Song& slot, int num);
+// Convenience: a clean slot with this one song as number 0.   On failure Song::error describes the problem.
 bool compile(const char* text, Song& out);
 
 }  // namespace opnmml

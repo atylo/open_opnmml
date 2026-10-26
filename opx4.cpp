@@ -1,5 +1,5 @@
 // ================================================================================================================
-// Opx4 - port of wuopn.dll's sound chip emulator.  See opx4.hpp for the overview and the state layout.
+// Opx4 - port of the original plugin's sound chip emulator.  See opx4.hpp for the overview and the state layout.
 //
 // How one output sample is produced (generate()):
 //   1. every 8 chip samples the LFO is advanced and each channel gets a fresh vibrato factor and tremolo value;
@@ -13,7 +13,8 @@
 //      samples (a 14-bit fixed-point accumulator decides how many chip samples belong to each output sample);
 //   5. the PSG is rendered separately, directly at the output rate, and added.
 //
-// Function names in [brackets] are the Hex-Rays names from wuopn.cpp, so each function can be compared with the decompile.
+// Function names in [brackets] are the names of the original functions (sub_XXXXXXXX = address in the original), so each
+// function can be compared with the original code.
 // ================================================================================================================
 #include "opx4.hpp"
 #include "chiptables.inc"
