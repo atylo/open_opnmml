@@ -1,4 +1,4 @@
-# opnmml - open-source player for the `.mus` MML music format
+# opnmml - open-source compiler and player for a special MML format
 
 A from-scratch C++ port of a game music plugin (an "OPN MML decoder"): it reads `.mus` MML text files
 and renders them to audio, emulating the sound hardware of the PC-88 (YM2203 FM + PSG), Sharp X1 (YM2151 FM + PSG)
