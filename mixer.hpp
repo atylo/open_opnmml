@@ -62,6 +62,10 @@ public:
     void playSong(int slot, int num);
     // OPNStopSE: begin the quick fade-out (about 0.26 s) of a slot.                                         [sub_10022CE0]
     void stopSlot(int slot);
+    // Cut a slot at once, with NO fade: its channels stop, and the mixer keys off the chip voices they were using, so FM notes die away through
+    // their own release (a PSG note stops instantly).  This is the original's stop+reset (sub_10022C80), which it uses internally before
+    // loading a song.  OPNStopSE (stopSlot) is the version with the quick fade-out.
+    void cutSlot(int slot);
     // Title of a loaded song ("" if none or the slot is invalid).                                          [sub_10022AF0]
     const std::string& songTitle(int slot, int num) const;
     bool songLoaded(int slot, int num) const;        // true when song `num` of `slot` has been compiled since the last wipe

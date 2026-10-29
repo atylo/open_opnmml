@@ -6,6 +6,7 @@
 // ================================================================================================================
 #include "cli.hpp"
 #include "mixer.hpp"
+#include "songlen.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -28,8 +29,11 @@ static const char* kHelpHead =
 "  Give the option letter, a space, then ONLY the value:   -v 40   (not  -v volume=40)\n"
 "  The long form works too:  --volume 40  or  --volume=40\n"
 "\n"
-"  -t, --time SECONDS     how many seconds of audio to render, 0.1 to 3600.        Default: 60\n"
-"                         (songs loop forever, so this is how long the file will be)\n"
+"  -t, --time SECONDS     how many seconds of audio to render, 0.1 to 3600.\n"
+"                         Default: exactly ONE PASS of the song: its length is measured (see the 'song :' line), the file\n"
+"                         ends where the longest channel ends, followed by the natural release of the last notes and\n"
+"                         no fade-out.  With -t the song keeps looping until the time is up.\n"
+
 "  -v, --volume N         master volume, 0 (loudest) to 512; every +27 halves the level.\n"
 "                         Default: 32 (what the game itself uses)\n"
 "  -d, -debug, --debug    debug mode: unlocks the technical options (machine, mute, sample rate, gains, timer phase, noise\n"
@@ -102,6 +106,7 @@ static void put16(FILE* f, uint16_t v) { fputc(v & 255, f); fputc((v >> 8) & 255
 int main(int argc, char** argv) {
     // ---- defaults ----
     double seconds = 60.0;
+    bool timeGiven = false;
     long rate = 44100, volume = 32, mute = 0, fmGain = 2048, totalOffset = 8, noiseSeed = 1, blockFrames = 128, timerPhase = 0;
     int device = -1;                      // -1 = from the file
     bool deviceGiven = false;
@@ -132,6 +137,7 @@ int main(int argc, char** argv) {
         #define NEED_VALUE(name) if (!val) return usageError("option " name " needs a value, e.g. " name " 32")
         if (cli::matchOption(argc, argv, i, "-t", "--time", val)) {
             NEED_VALUE("-t");  if (!cli::parseDouble("-t", val, 0.1, 3600, seconds, "seconds of audio", "90")) return 2;
+            timeGiven = true;
         } else if (cli::matchOption(argc, argv, i, "-dev", "--device", val)) {
             NEED_VALUE("-dev");
             std::string s = val; for (char& c : s) c = (char)toupper((unsigned char)c);
@@ -225,13 +231,29 @@ int main(int argc, char** argv) {
     // The player starts from a clean slot: setDevice wiped every slot, so this file's tones and envelopes are the only ones.
     if (!mx->loadSong(3, 0, text.c_str(), true)) { fprintf(stderr, "error: %s\n", mx->lastError().c_str()); delete mx; return 1; }
 
+    // ---- how much to render ----
+    // Without -t the file holds exactly one pass of the song: the original never stops a looping song by itself, so its length is
+    // measured (songlen.cpp) and the render ends where the longest channel reaches its end.  The notes that are still ringing then are
+    // allowed to die away through their own release (no fade-out); a looping song would otherwise just start its next round.
+    SongTiming timing;
+    bool haveTiming = measureSong(song, 0, timing);
+    bool autoLength = !timeGiven;
+    if (autoLength && (!haveTiming || timing.truncated)) {
+        fprintf(stderr, "warning: the length of the song could not be determined; rendering 60 s instead (use -t to choose a time).\n");
+        autoLength = false; seconds = 60.0;
+    }
+    long total = autoLength ? (long)((double)timing.onceMs * (double)rate / 1000.0 + 0.999999) : (long)(seconds * (double)rate + 0.5);
+
     // ---- render, streaming straight to the file ----
-    long total = (long)(seconds * (double)rate + 0.5);
     FILE* f = fopen(outPath, "wb");
     if (!f) { fprintf(stderr, "error: cannot create '%s': %s\n", outPath, strerror(errno)); delete mx; return 1; }
-    uint32_t bytes = (uint32_t)total * 4u;
-    fwrite("RIFF", 1, 4, f); put32(f, 36 + bytes); fwrite("WAVEfmt ", 1, 8, f); put32(f, 16); put16(f, 1); put16(f, 2);
-    put32(f, (uint32_t)rate); put32(f, (uint32_t)rate * 4); put16(f, 4); put16(f, 16); fwrite("data", 1, 4, f); put32(f, bytes);
+    auto writeHeader = [&](long frames) {            // rewritten at the end, when the length of the release tail is known
+        uint32_t bytes = (uint32_t)frames * 4u;
+        fseek(f, 0, SEEK_SET);
+        fwrite("RIFF", 1, 4, f); put32(f, 36 + bytes); fwrite("WAVEfmt ", 1, 8, f); put32(f, 16); put16(f, 1); put16(f, 2);
+        put32(f, (uint32_t)rate); put32(f, (uint32_t)rate * 4); put16(f, 4); put16(f, 16); fwrite("data", 1, 4, f); put32(f, bytes);
+    };
+    writeHeader(total);
     std::vector<int16_t> block((size_t)2 * (size_t)blockFrames);
     int peak = 0;
     bool writeOk = true;
@@ -241,6 +263,27 @@ int main(int argc, char** argv) {
         for (int i = 0; i < 2 * n; i++) { int a = block[i] < 0 ? -block[i] : block[i]; if (a > peak) peak = a; }
         writeOk = fwrite(block.data(), 4, (size_t)n, f) == (size_t)n;
         done += n;
+    }
+    long tailFrames = 0; bool tailOpen = false;
+    if (autoLength && writeOk) {
+        mx->cutSlot(3);                               // the sequencer must not start the next round: stop it, the chip keeps ringing
+        std::vector<int16_t> tail;
+        const long cap = rate * 5, window = rate / 25;   // give up after 5 s; "settled" = the last 40 ms move by at most 2 steps
+        for (;;) {
+            size_t old = tail.size();
+            tail.resize(old + (size_t)2 * (size_t)blockFrames);
+            mx->render(tail.data() + old, blockFrames);
+            long n = (long)(tail.size() / 2);
+            if (n >= window) {
+                int lo = 32767, hi = -32768;
+                for (size_t i = tail.size() - (size_t)2 * (size_t)window; i < tail.size(); i++) { if (tail[i] < lo) lo = tail[i]; if (tail[i] > hi) hi = tail[i]; }
+                if (hi - lo <= 2) { tailFrames = n - window; break; }
+            }
+            if (n >= cap) { tailFrames = n; tailOpen = true; break; }
+        }
+        for (long i = 0; i < 2 * tailFrames; i++) { int a = tail[i] < 0 ? -tail[i] : tail[i]; if (a > peak) peak = a; }
+        writeOk = fwrite(tail.data(), 4, (size_t)tailFrames, f) == (size_t)tailFrames;
+        writeHeader(total + tailFrames);
     }
     if (fclose(f) != 0) writeOk = false;
     if (!writeOk) {
@@ -255,7 +298,19 @@ int main(int argc, char** argv) {
     if (!song.titleOf(0).empty()) printf("  title   : %s\n", song.titleOf(0).c_str());
     printf("  device  : %s  (%s)\n", devName[device - 4], deviceGiven ? "chosen with -dev" : song.machine != M_PC88 ? "from #machine" : "default");
     printf("  dialect : %s\n", song.x1Mode ? "X1 (channels A-K)" : "PC-88 (channels A-F)");
-    printf("  length  : %.1f s at %ld Hz (%ld frames)\n", seconds, rate, total);
+    if (haveTiming) {
+        const SongTiming& tm = timing;
+        printf("  song    : %.1f s played once", tm.onceMs / 1000.0);
+        if (tm.loops && tm.uniform) printf("; loops from %.1f s, loop length %.1f s", tm.introMs / 1000.0, tm.loopMs / 1000.0);
+        else if (tm.loops)          printf("; loops (channels differ, see mmldump)");
+        else                        printf("; does not loop");
+        if (tm.fadeEnd) printf("; ends with a fade-out");
+        printf("\n");
+    }
+    if (autoLength) printf("  length  : %.1f s of music + %.2f s release tail = %.1f s at %ld Hz (%ld frames)   (one pass, no fade-out)\n",
+                           (double)total / rate, (double)tailFrames / rate, (double)(total + tailFrames) / rate, rate, total + tailFrames);
+    else            printf("  length  : %.1f s at %ld Hz (%ld frames)\n", (double)total / rate, rate, total);
+    if (tailOpen) printf("  warning : the sound had not settled 5 s after the end of the music; the file ends there.\n");
     printf("  volume  : %ld   peak level: %.0f%% of full scale\n", volume, 100.0 * peak / 32767.0);
     if (debug) {
         static const int chipMode[] = {0, 4, 5};

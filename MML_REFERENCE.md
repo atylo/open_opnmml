@@ -280,14 +280,31 @@ The LFO restarts with each new note.  **[code]**
 Starts a fade-out of the **whole slot**: the volume of every channel is reduced by one step every `256 / (256 - n)` updates of
 16 ms, and when it is finished every channel stops.  The total time is about `3825 / (256 - n) * 16` ms: `F16` takes
 0.26 s (this is what the stop command of the game uses), `F128` 0.48 s, `F200` 1.1 s, `F255` about 61 s. **[code]**
-A fade also ends a looping song: use it at the end of a non-looping piece.
+A fade also ends a looping song: use it at the end of a non-looping piece.  The game's own stop command (OPNStopSE) starts exactly the same
+fade as `F16`; no song of the example set uses the `F` command.
+
+| `F` | 1 | 16 | 64 | 128 | 200 | 240 | 255 |
+|---|---|---|---|---|---|---|---|
+| time to silence | 0.24 s | 0.26 s | 0.32 s | 0.48 s | 1.1 s | 3.8 s | 61 s |
 
 ---
 
 ## 7. Tempo
 
-`t`*n* (1-255) = quarter notes per minute.  The default when a song starts is **120**.  One tick lasts
-`60000 / (48 * n)` ms: at `t120` a tick is 10.4 ms, a quarter note 0.5 s and a whole note 2 s.  The tempo belongs to the slot, not the
+`t`*n* (1-255) = quarter notes per minute.  The default when a song starts is **120**.  Nominally one tick lasts `60000 / (48 * n)` ms: at `t120` a tick is 10.4 ms, a quarter
+note 0.5 s and a whole note 2 s.
+
+In practice songs are slightly **slower** than that, because the engine throws away a fraction when it computes the tempo.  It works
+like this: every millisecond a counter is increased by `floor(floor(n * 49152 / 60) / 1000)`, and each time the counter passes 1024 the
+song advances one tick.  For `t120` the exact value would be 98.304, but the engine uses 98, so a tick lasts `1024 / 98` = 10.449 ms
+instead of 10.417 ms: the song is 0.3 % slower.  Other examples: `t76` 16.516 ms instead of 16.447 ms (0.4 % slower), `t255` 4.923 ms
+instead of 4.902 ms.  For tempos from 60 upward the song is between 0 and 2 % slower (typically 0.4 %).  For very slow tempos the
+effect is large: `t8` is 9 % slow, `t6` 23 %, `t2` 64 %, and **`t1` never advances at all** (the value becomes 0).  The port does
+exactly the same as the original; this was checked tick for tick. **[tested]**
+
+The first tick is also special.  Every song starts with the default tempo 120 and the counter at 0, and the song's own `t` only
+takes effect when the first tick has been played, so the first notes start after 11 ms (98 per ms must reach 1024 first), whatever
+tempo the song has.  Every song of the original plugin starts with these 11 ms of silence. **[tested]**  The tempo belongs to the slot, not the
 channel (section 3).
 
 The game can also change the tempo from outside (it does so for the "unstable tempo" effect on the X1 machine).
@@ -304,6 +321,15 @@ The game can also change the tempo from outside (it does so for the "unstable te
 * `L` marks where the channel jumps back to when its code ends.  Without an `L` a channel simply stops at its end.
 * `L` cannot be inside a `[ ]` loop.
 * A channel with `L` as its very last command (nothing after it) is an error.
+* **When does a song end?**  A channel that reaches the end of its text stops, unless the text contained an `L`: then it jumps back
+  to the loop point and plays on **for ever**.  A slot goes quiet when all its channels have stopped, when an `F` fade-out has
+  finished, or when the program stops it or loads another song into it; the plugin has no function that tells the program whether
+  music is still playing.  All 18 example songs loop for ever.
+* **How long is a song?**  A file does not store its length: it follows from the notes and from the tempo commands, so `mmldump`
+  works it out by running the sequencer silently (and `mmlplay` prints one line): the time the first pass takes, when the loop
+  starts and how long one loop lasts.  A channel may have a few notes before its `L` (a lead-in); the example songs have channels
+  that enter their loop up to 1.2 s apart but with loops of exactly the same length, so they stay together on every repeat.
+  The numbers were checked against the original, tick for tick. **[tested]**
 * **Channels loop independently.**  Nothing requires all channels to have the same length: if they differ, the parts drift
   against each other.  Good files make every channel the same length (the example files do: `mmldump` prints the tick
   count of every channel and the loop point).

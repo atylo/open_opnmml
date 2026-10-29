@@ -274,7 +274,9 @@ void Opx4::setOpmKeyCode(int ch, int8_t keyCode, int keyFraction) {             
 //   0x00-0x0F  PSG registers      0x22 LFO      0x27 channel-3 mode      0x28 key on/off
 //   0x30-0x8F  operator registers (DT/MUL, TL, KS/AR, AM/D1R, D2R, D1L/RR)
 //   0xA0-0xAA  frequency          0xB0 algorithm/feedback               0xB4 sensitivity/pan
-// Only "port 0" (channels 1-3) is decoded; the second port of an OPNA is not implemented.
+// This is the chip of the plain OPN family (YM2203): ONE register port and three FM channels.  The second register port of the bigger OPNA
+// (YM2608: FM channels 4-6, ADPCM, rhythm sounds) does not exist here: the register number is simply cut to 8 bits.  The original plugin has no
+// OPNA either, and the PC-88 dialect of the language only has channels A-F (3 FM + 3 PSG).
 // =================================================================================================================
 void Opx4::writeOpn(int reg, int val) {
     int r = reg & 0xFF, v = val & 0xFF;
@@ -290,7 +292,8 @@ void Opx4::writeOpn(int reg, int val) {
                 case 0x60: setDecay1AndAm(op, v); break;
                 case 0x70: setDecay2AndDt2(op, v & 0x1F); break;
                 case 0x80: setSustainRelease(op, v); break;
-                default: break;                                   // 0x90 (SSG-EG) is not implemented
+                default: break;                                   // 0x90-0x9F = SSG-EG (an FM envelope mode borrowed from the PSG): not in the original either;
+                                                                        // the value is only remembered in the register copy
                 }
             }
         } else if ((r & 3) != 3) {

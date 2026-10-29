@@ -5,14 +5,14 @@ CXXFLAGS ?= -std=c++11 -O2 -Wall -Wextra -s
 
 all: mmlplay mmltrace mmldump
 
-mmlplay: mmlplay.cpp mixer.cpp opx4.cpp seq.cpp mmlcomp.cpp cli.hpp mixer.hpp opx4.hpp seq.hpp mmlcomp.hpp chiptables.inc tables.inc
-	$(CXX) $(CXXFLAGS) -o $@ mmlplay.cpp mixer.cpp opx4.cpp seq.cpp mmlcomp.cpp
+mmlplay: mmlplay.cpp mixer.cpp opx4.cpp seq.cpp mmlcomp.cpp songlen.cpp cli.hpp mixer.hpp opx4.hpp seq.hpp mmlcomp.hpp songlen.hpp chiptables.inc tables.inc
+	$(CXX) $(CXXFLAGS) -o $@ mmlplay.cpp mixer.cpp opx4.cpp seq.cpp mmlcomp.cpp songlen.cpp
 
 mmltrace: mmltrace.cpp seq.cpp mmlcomp.cpp cli.hpp seq.hpp mmlcomp.hpp tables.inc
 	$(CXX) $(CXXFLAGS) -o $@ mmltrace.cpp seq.cpp mmlcomp.cpp
 
-mmldump: mmldump.cpp mmlcomp.cpp cli.hpp mmlcomp.hpp
-	$(CXX) $(CXXFLAGS) -o $@ mmldump.cpp mmlcomp.cpp
+mmldump: mmldump.cpp mmlcomp.cpp seq.cpp songlen.cpp cli.hpp mmlcomp.hpp seq.hpp songlen.hpp tables.inc
+	$(CXX) $(CXXFLAGS) -o $@ mmldump.cpp mmlcomp.cpp seq.cpp songlen.cpp
 
 clean:
 	rm -f mmlplay mmltrace mmldump mmlplay.exe mmltrace.exe mmldump.exe

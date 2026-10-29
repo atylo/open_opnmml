@@ -173,7 +173,9 @@ private:
         CH_OUTPUT_PTR     = 14    // 4 dword indices of the operator outputs summed into this channel (14..17)
     };
 
-    // Byte offsets (from the start of the image) of the register shadows.
+    // Byte offsets (from the start of the image) of the register shadows: a copy of the last value written to each register (256 bytes
+    // for the OPN/PSG map, 256 for the OPM map).  The chip needs them because values are split over two registers (a frequency is a
+    // low and a high byte), and because read() hands back the PSG registers from it.
     enum { SHADOW_OPN = 42, SHADOW_OPM = 298 };
 
     std::vector<int32_t> d;       // the state image

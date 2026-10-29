@@ -10,10 +10,10 @@ against recordings of the original plugin. No code of the original host applicat
     make                      # in an MSYS2 MinGW64 shell; produces mmlplay, mmltrace, mmldump
     mmlplay --help            # the everyday options;   mmlplay -d --help   also lists the debug-mode options
 
-    mmlplay song.mus song.wav                         # 60 s, machine taken from the file
-    mmlplay song.mus song.wav -t 120 -v 24            # 120 s, quieter
+    mmlplay song.mus song.wav                         # exactly one pass of the song (no looping, no fade-out), machine taken from the file
+    mmlplay song.mus song.wav -t 120 -v 24            # 120 s (the song keeps looping), quieter
     mmlplay song.mus psg.wav -t 30 -d -m 0x7          # debug mode: mute channels A,B,C (FM on PC-88): hear only the PSG
-    mmldump song.mus -l                               # what the compiler made of the file
+    mmldump song.mus -l                               # what the compiler made of the file, and how long the song is
     mmltrace song.mus -t 3000                         # chip register writes of the first 3 seconds
 
 Options are `-x value` (letter, space, value only: `-v 40`, not `-v volume=40`); long forms `--volume 40` and
@@ -31,6 +31,7 @@ Options are `-x value` (letter, space, value only: `-v 40`, not `-v volume=40`);
 | `opx4.cpp/.hpp` | The chip: 4-operator FM (OPN 3 ch or OPM 8 ch) plus a 3-voice PSG. State layout and every register are documented in the header. |
 | `mixer.cpp/.hpp` | Top level: chip + 4 sequencer slots, 1 ms chunking, master volume, 16-bit clipping. |
 | `chiptables.inc`, `tables.inc` | Lookup tables extracted from the original, each documented with its original address. |
+| `songlen.cpp` | Song length: a silent dry run of the sequencer that finds the end of the first pass, the loop start and the loop length. |
 | `mmlplay.cpp`, `mmltrace.cpp`, `mmldump.cpp`, `cli.hpp` | The command-line tools and their shared argument parser. |
 
 Function names in comments such as `[sub_1001A6E0]` are the names of the original functions (the number is their address
@@ -56,15 +57,19 @@ Everything below was compared with the ORIGINAL plugin DLL by running its own co
 
 1. **Bugs of the original that are not copied.** A pitch bend on a note of length 0, a stray `]`, and a bend with no target
    note make the original plugin crash or read past the line; this port rejects such files with an error.
-2. **Per-slot state.** The DLL keeps a slot's tone and envelope tables when another file is compiled into the same slot;
-   this port compiles each file from scratch (to be changed with the multi-song features, see TODO.md).
+2. **Slots.** The engine keeps up to 64 songs per slot that share tones and envelopes, like the original (`Mixer::loadSong`, checked
+   against the original DLL); `mmlplay` itself plays one file at a time.
 3. Output is sample-exact only for a given render block size (`-b`, default 128, which is what the DLL's DirectSound path uses): the 1 ms
    sequencer stepping inside a block shifts note onsets by a few samples when the block size changes. It sounds the same.
-4. In-game recordings of the original differ from this engine's output by a smooth frequency tilt (about -10% below 500 Hz,
-   +20% above 2.7 kHz), the same in both example songs. Applying it makes the apparent "PSG 1.18x louder" in the PC-88 recording
-   disappear (PSG 0.99, FM 1.01). It is not in the engine (which is identical to the DLL's) and not in the game scripts supplied;
-   it comes from the capture chain (Windows/driver enhancements or the game's audio path). Recordings are therefore good for
-   pitch, timing and character, not for absolute spectrum.
-5. A few oddities of the original are kept on purpose (see comments): e.g. OPN register 0x27 (channel-3 mode) never
+4. **Recordings of the game.**  With all Windows sound enhancements switched off, a recording of the game agrees with this engine at every tested
+   frequency: the level of 64 FM and PSG tones is identical to three decimals (DS mode on and off), the tuning is identical (0.0 ppm), and
+   the PSG square waves are sample-for-sample identical in 9 or 10 of 13 tones (the others are one sample off at the edges).  The PSG noise is
+   the same sequence as ours, starting at a different place.  A recording made with the enhancements ON (here: SoundAlive) shows a smooth
+   tilt, about 0.92x below 300 Hz and 1.23x above 4 kHz; the same tilt appears on a plain WAV file played without the game, so it is the
+   sound-card setting and not the game or the engine.  Record with enhancements off (see `calib/`).
+5. **Chip features that are not there** (the original does not have them either, and the language cannot reach them): the second register port of
+   the OPNA (YM2608: FM channels 4-6, ADPCM, rhythm sounds), and SSG-EG, an FM envelope mode of the OPN family (registers 0x90-0x9F; writes are
+   remembered and ignored).  The PC-88 dialect has 3 FM + 3 PSG channels, the X1 dialect 8 FM + 3 PSG.
+6. A few oddities of the original are kept on purpose (see comments): e.g. OPN register 0x27 (channel-3 mode) never
    takes effect, a trailing `//` comment on a channel line joins it to the next line, the amplitude LFO's delay is
    consumed by the first note.

@@ -6,6 +6,7 @@
 // ================================================================================================================
 #include "cli.hpp"
 #include "mmlcomp.hpp"
+#include "songlen.hpp"
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -118,6 +119,31 @@ int main(int argc, char** argv) {
         printf("channel %c: %zu bytes, %d ticks, loop point at tick %d\n", 'A' + i, c.code.size(), c.totalTicks, c.loopPoint);
         if (list) listing(c.code);
         else { printf(" "); for (size_t k = 0; k < c.code.size(); k++) printf(" %02x", c.code[k]); printf("\n"); }
+    }
+
+    // ---- how long the song is: a silent dry run of the sequencer (see songlen.hpp) ----
+    SongTiming tm;
+    if (measureSong(s, 0, tm)) {
+        printf("timing (dry run of the sequencer, 1 ms steps):\n");
+        for (int i = 0; i < 11; i++) {
+            const ChannelTiming& t = tm.ch[i];
+            if (!t.used) continue;
+            printf("  channel %c: %s at %.3f s", 'A' + i, t.fadeEnded ? "cut by a fade-out" : t.loops ? "first pass ends" : "ends", t.endMs / 1000.0);
+            if (t.loops) printf(", loop starts at %.3f s, one loop lasts %.3f s", t.loopStartMs / 1000.0, t.loopMs / 1000.0);
+            printf("\n");
+        }
+        printf("song: played once = %.3f s", tm.onceMs / 1000.0);
+        if (tm.loops) printf(" (intro %.3f s, then a loop of %.3f s that repeats for ever)", tm.introMs / 1000.0, tm.loopMs / 1000.0);
+        else printf(" (does not loop; it stops by itself)");
+        if (tm.fadeEnd) printf(", ends with a fade-out");
+        printf("\n");
+        if (!tm.uniform) printf("note: the channels do not all loop by the same length (or only some of them loop), so the parts drift against each other; see the per-channel times above.\n");
+        else if (tm.loops) {
+            long lo = -1, hi = -1;
+            for (int i = 0; i < 11; i++) if (tm.ch[i].used) { if (lo < 0 || tm.ch[i].loopStartMs < lo) lo = tm.ch[i].loopStartMs; if (tm.ch[i].loopStartMs > hi) hi = tm.ch[i].loopStartMs; }
+            if (hi - lo > 1) printf("note: the channels enter their loop at different times (%.3f to %.3f s), but every loop has the same length, so they stay together on every repeat.\n", lo / 1000.0, hi / 1000.0);
+        }
+        if (tm.truncated) printf("note: the measurement hit the time limit; the values above are incomplete.\n");
     }
     return 0;
 }
