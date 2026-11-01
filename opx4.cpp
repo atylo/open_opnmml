@@ -26,6 +26,13 @@ namespace {
 // ---- Random table for noise / random LFO  (word_10035A60, filled by sub_1001A490) -------------------------------
 // The DLL fills 16384 entries with (rand() & 0xFFF) - 2048.  MSVC's rand() with the default seed 1 is this LCG.  If
 // anything else in the host process called rand()/srand() first, the real table differs: use Opx4::setNoiseSeed().
+// The random table.  The original fills a table of 16384 values with the C library's rand() when the first chip is created
+// [sub_1001A490].  It was built with Visual Studio 2008 and uses its statically linked runtime, whose rand() is
+//     state = state * 214013 + 2531011 (32 bits);   result = (state >> 16) & 0x7FFF,   the state starting at 1 (nobody calls srand).
+// That formula is written out here instead of calling rand(), because the C library of other systems (glibc, macOS) uses a different
+// generator, and because rand() is shared state that any other code could change.  The table is identical to the original's in all
+// 16384 entries (read out of the emulated DLL).  It is used by the OPM noise generator (X1 chip, register 0x0F) and by the chip's
+// random LFO waveform.  The PSG noise does NOT use it: that is the shift register G_PSG_LFSR below.
 int16_t  g_noise[16384];
 bool     g_noiseReady = false;
 uint32_t g_seed = 1;

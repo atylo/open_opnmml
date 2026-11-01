@@ -133,7 +133,8 @@ What the voice type changes:
 | `@n` | picks FM tone n from the tone table | selects tone/noise mode (section 9.2) |
 | `v` | attenuates the carrier operators (3 dB per step; `v0` is quiet but **not** silent) | the chip's 4-bit amplitude (`v0` = silent) |
 | `p` pan | stereo position - **X1 only** (the OPN has no pan) | none |
-| `MP`, `MA`, `D`, `P`, `R`, `EA`, bend | work | work |
+| pitch commands `D`, `P`, bend and `MP` | change the pitch of the voice | the same |
+| volume commands `MA`, `EA` and `R` | change the volume of the voice (the final level is limited to 0-15 as described below) | the same |
 | lowest/highest note | o0 c+ ... o7 b | below o1 c all notes sound as o1 c |
 | key-off | the tone's own release (RR) is heard | amplitude drops to 0 at once |
 

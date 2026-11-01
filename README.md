@@ -50,26 +50,49 @@ Everything below was compared with the ORIGINAL plugin DLL by running its own co
   line and compiled output (bytecode, tone and envelope tables) as the DLL's compiler.
 * **Random songs**: about 100 random songs using every bytecode command, on random devices (also combinations the game never
   uses), give identical audio.
-* **Recordings of the original** (PC-88 and X1 files): pitch matches to four digits, loop periods match, overall level 1.00 / 0.96.
+* **Recordings of the game itself** (Windows sound enhancements switched off, see `calib/`): a test song of 64 FM and PSG tones has the same
+  level to three decimals (DS mode on and off) and the same tuning (0.0 ppm); the PSG square waves are sample-for-sample identical in 9 or
+  10 of 13 tones.  A whole song (`bgm05_fm3`, 98 s) runs at the same speed to 0.03 ppm, every frequency band has the ratio 1.000 and the waveforms
+  correlate at 0.994 in 100 ms windows.  (The speed match also shows that the game really has the tempo rounding described below.)
+* **The public release of a song** (`bgm01_x1`): same notes, timing and tuning; it differs only by post-production (louder, a gentle equaliser,
+  no DC offset, a fade-out).  With a gain, an equaliser and a DC filter applied to our render the level and tone agree within 0.2 dB.
 * Sanitizer runs (AddressSanitizer/UBSan) and corrupted-input tests: no crashes.
 
-## Known differences from the original
+## Differences from the original
 
-1. **Bugs of the original that are not copied.** A pitch bend on a note of length 0, a stray `]`, and a bend with no target
-   note make the original plugin crash or read past the line; this port rejects such files with an error.
-2. **Slots.** The engine keeps up to 64 songs per slot that share tones and envelopes, like the original (`Mixer::loadSong`, checked
-   against the original DLL); `mmlplay` itself plays one file at a time.
-3. Output is sample-exact only for a given render block size (`-b`, default 128, which is what the DLL's DirectSound path uses): the 1 ms
-   sequencer stepping inside a block shifts note onsets by a few samples when the block size changes. It sounds the same.
-4. **Recordings of the game.**  With all Windows sound enhancements switched off, a recording of the game agrees with this engine at every tested
-   frequency: the level of 64 FM and PSG tones is identical to three decimals (DS mode on and off), the tuning is identical (0.0 ppm), and
-   the PSG square waves are sample-for-sample identical in 9 or 10 of 13 tones (the others are one sample off at the edges).  The PSG noise is
-   the same sequence as ours, starting at a different place.  A recording made with the enhancements ON (here: SoundAlive) shows a smooth
-   tilt, about 0.92x below 300 Hz and 1.23x above 4 kHz; the same tilt appears on a plain WAV file played without the game, so it is the
-   sound-card setting and not the game or the engine.  Record with enhancements off (see `calib/`).
-5. **Chip features that are not there** (the original does not have them either, and the language cannot reach them): the second register port of
-   the OPNA (YM2608: FM channels 4-6, ADPCM, rhythm sounds), and SSG-EG, an FM envelope mode of the OPN family (registers 0x90-0x9F; writes are
-   remembered and ignored).  The PC-88 dialect has 3 FM + 3 PSG channels, the X1 dialect 8 FM + 3 PSG.
-6. A few oddities of the original are kept on purpose (see comments): e.g. OPN register 0x27 (channel-3 mode) never
-   takes effect, a trailing `//` comment on a channel line joins it to the next line, the amplitude LFO's delay is
-   consumed by the first note.
+Things this port does differently ON PURPOSE:
+
+1. **Bugs of the original that are not copied.**  A pitch bend on a note of length 0, a stray `]` and a bend with no target note make the original
+   crash or read past the line; this port rejects such files with an error.  A tempo of 0 or below is ignored (the original divides by zero).  The
+   original clears the wrong title when a song is loaded (the title of song 11 x N instead of N, which corrupts memory for N >= 6); the port clears
+   the right one.  A song that fails to compile leaves the slot as it was (the original keeps half-compiled data).  An out-of-range slot is an error.
+2. **Additions that the original does not have:** play a song once instead of looping it (`Sequencer::setLooping`), the measurement of a song's length
+   (`songlen.cpp`), the one-pass output of `mmlplay` with a natural release tail, the debug mode with its options, and warnings when the device and the
+   file do not fit (a PC-88 file on the X1 chip, music on channels that are silent on the MZ chip).  The master volume only accepts 0 to 512 (the
+   original takes any number).
+3. **Not ported:** everything that only talks to the host program (the script class, the sound decoder interface, DirectSound).
+4. Output is sample-exact only for a given render block size (`-b`, default 128, which is what the DLL's DirectSound path uses): the 1 ms sequencer
+   stepping inside a block shifts note onsets by a few samples when the block size changes.  It sounds the same.
+
+## Kept on purpose (the same as the original, even where it looks odd)
+
+Real `.mus` files were written against these behaviours, so they are copied exactly:
+
+* **The tempo is rounded down:** songs run 0.3 to 2 % slower than the nominal tempo (9 % at `t8`; `t1` never advances), and every song starts after
+  about 11 ms of silence.  (`MML_REFERENCE.md`, section 7.)
+* **Language oddities:** a trailing `//` comment on a channel line joins it to the next line; the octave range is checked after every command; the delay
+  of an amplitude LFO is used up by the first note; lowercase or indented channel lines and a last line without a newline are ignored silently; an
+  unused song number plays the first song of the slot; in the X1 dialect a tone's DT2 value lands in the AMS byte (section 12 of the reference).
+* **Chip oddities:** OPN register 0x27 (channel-3 mode) never takes effect; FM channels D-H of the X1 chip are cut at key-off like PSG voices; on the
+  MZ chip all FM channels are silent.
+* **Chip features that are not there:** the second register port of the OPNA (YM2608: FM channels 4-6, ADPCM, rhythm sounds) and SSG-EG, an FM envelope
+  mode of the OPN family (registers 0x90-0x9F; writes are remembered and ignored).  The PC-88 dialect has 3 FM + 3 PSG channels, the X1 dialect 8 FM + 3 PSG.
+* **Noise:** the PSG noise is a fixed-seed shift register that keeps stepping while the chip runs, and the table behind the X1 chip's noise and the
+  random LFO is built with the Visual C++ `rand()` formula, identical to the original's table.  Where in the noise sequence a note starts depends on
+  tiny timing differences, so noise is never sample-exact against a recording.
+
+## Known limits of the comparison with recordings
+
+A recording made with Windows sound enhancements ON (here: SoundAlive) shows a smooth tilt, about 0.92x below 300 Hz and 1.23x above 4 kHz; the same
+tilt appears on a plain WAV file played without the game, so it is the sound-card setting and not the game or the engine.  Record with the
+enhancements off (see `calib/README_CALIB.txt`).

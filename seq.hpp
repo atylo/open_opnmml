@@ -27,6 +27,7 @@ struct SeqCh {                                   // CSoundSeqCh, 0x68 bytes in t
     uint16_t   len = 0;                          // +12  ticks left in current event
     int32_t    off = 0;                          // +16
     int32_t    loopOff = 0;                      // +20
+    bool       loopEnabled = true;               // false: reaching the end always stops the channel, even if it has a loop point (not in the original)
     int16_t    pitch16 = 0;                      // +24  16 * note
     int16_t    detune = 0;                       // +26
     int16_t    curPitch = 0;                     // +28
@@ -71,6 +72,9 @@ public:
     // Like the original: a number that was never compiled starts at offset 0 of the channel code, i.e. it plays the
     // FIRST song compiled into the slot (silence when the slot is empty).  Check Song::songs / the Mixer if that matters.
     void start(int num = 0);
+    // Switch the song loop off or on for all channels (default on, like the original).  With the loop off every channel stops at the end of its
+    // own text, exactly as a channel without a loop point does, so the song plays once.  Not in the original: used to render one pass.
+    void setLooping(bool on) { for (int i = 0; i < 11; i++) ch[i].loopEnabled = on; }
     // Begin the quick fade-out used by OPNStopSE (about 0.26 s, the channels are cut when it is over).  Returns true when
     // some channel was still active.                                                              [sub_1001C5C0]
     bool stop();

@@ -57,6 +57,11 @@ void Mixer::playSong(int slot, int num) {
     seq[slot]->start(num);
 }
 
+void Mixer::setLooping(int slot, bool on) {
+    if (slot < 0 || slot > 3) return;
+    seq[slot]->setLooping(on);
+}
+
 void Mixer::cutSlot(int slot) {
     if (slot < 0 || slot > 3) return;
     stopAndReset(slot);

@@ -217,7 +217,7 @@ bool SeqCh::tick(bool mayWrite) {
             uint8_t op = *p;
             if (op == 0) {
                 ++passes;
-                if (loopOff == 0) {
+                if (loopOff == 0 || !loopEnabled) {
                     passes = 0xFF; state = 0;
                     off = (int32_t)(p - base);
                     flags |= FLAG_KEY_OFF; running = false;

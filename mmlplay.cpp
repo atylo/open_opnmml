@@ -31,8 +31,10 @@ static const char* kHelpHead =
 "\n"
 "  -t, --time SECONDS     how many seconds of audio to render, 0.1 to 3600.\n"
 "                         Default: exactly ONE PASS of the song: its length is measured (see the 'song :' line), the file\n"
-"                         ends where the longest channel ends, followed by the natural release of the last notes and\n"
-"                         no fade-out.  With -t the song keeps looping until the time is up.\n"
+"                         ends where the longest channel ends, followed by the natural release of the last notes (until\n"
+"                         the sound is 60 dB below the loudest point of the song) and no fade-out.  Every channel stops\n"
+"                         at the end of its own text; nothing of the next round is played.\n"
+"                         With -t the song keeps looping until the time is up.\n"
 
 "  -v, --volume N         master volume, 0 (loudest) to 512; every +27 halves the level.\n"
 "                         Default: 32 (what the game itself uses)\n"
@@ -59,7 +61,9 @@ static const char* kHelpDebug =
 "                         (internal value; the original uses 8).  Default: 8\n"
 "  -p, --phase N          starting phase of the sequencer's millisecond timer, 0 to 11288 at 44.1 kHz.  Default: 0.\n"
 "                         (The original's audio thread is already running when a song starts, so its phase is arbitrary.)\n"
-"  -s, --noise-seed N     seed of the random table behind noise and the random LFO.  Default: 1 (MSVC rand())\n"
+"  -s, --noise-seed N     seed of the random table used by the X1 chip's noise generator and the random LFO waveform.\n"
+"                         Default: 1, which is the original's table (Visual C++ rand() that was never seeded).  The PSG noise\n"
+"                         does not use this table (it is a fixed shift register), so this seed does not change it.\n"
 "  -b, --block N          frames rendered per engine call, 64 to 65536.  Default: 128, the size the original's DirectSound\n"
 "                         path uses.  It does not change how the music sounds, but it moves note onsets by a few samples,\n"
 "                         which changes the waveform at the sample level (as in the original).\n";
@@ -229,6 +233,7 @@ int main(int argc, char** argv) {
     if (timerPhase >= mx->timerPhaseRange()) { fprintf(stderr, "error: option -p: %ld is too large for this sample rate (allowed 0..%d).\n", timerPhase, mx->timerPhaseRange() - 1); delete mx; return 2; }
     mx->setTimerPhase((int)timerPhase);
     // The player starts from a clean slot: setDevice wiped every slot, so this file's tones and envelopes are the only ones.
+    if (!timeGiven) mx->setLooping(3, false);         // one pass: every channel stops at the end of its own text (see below)
     if (!mx->loadSong(3, 0, text.c_str(), true)) { fprintf(stderr, "error: %s\n", mx->lastError().c_str()); delete mx; return 1; }
 
     // ---- how much to render ----
@@ -266,9 +271,13 @@ int main(int argc, char** argv) {
     }
     long tailFrames = 0; bool tailOpen = false;
     if (autoLength && writeOk) {
-        mx->cutSlot(3);                               // the sequencer must not start the next round: stop it, the chip keeps ringing
+        // (no cut is needed: with the loop switched off every channel has already stopped by itself and been keyed off at its own end,
+        // so the notes that are still ringing just die away through their release; nothing of the next round is ever played)
         std::vector<int16_t> tail;
-        const long cap = rate * 5, window = rate / 25;   // give up after 5 s; "settled" = the last 40 ms move by at most 2 steps
+        // The tail ends where the sound has fallen 60 dB below the loudest point of the song (0.1 % of the peak, but never less than the
+        // chip's own constant floor of about 2 steps): from there on nothing can be heard.  Give up after 5 s.
+        const long cap = rate * 5, window = rate / 25;
+        const int limit = (int)(peak * 0.002) > 2 ? (int)(peak * 0.002) : 2;       // allowed swing (peak to peak) in the last 40 ms
         for (;;) {
             size_t old = tail.size();
             tail.resize(old + (size_t)2 * (size_t)blockFrames);
@@ -277,7 +286,7 @@ int main(int argc, char** argv) {
             if (n >= window) {
                 int lo = 32767, hi = -32768;
                 for (size_t i = tail.size() - (size_t)2 * (size_t)window; i < tail.size(); i++) { if (tail[i] < lo) lo = tail[i]; if (tail[i] > hi) hi = tail[i]; }
-                if (hi - lo <= 2) { tailFrames = n - window; break; }
+                if (hi - lo <= limit) { tailFrames = n - window; break; }
             }
             if (n >= cap) { tailFrames = n; tailOpen = true; break; }
         }

@@ -62,6 +62,9 @@ public:
     void playSong(int slot, int num);
     // OPNStopSE: begin the quick fade-out (about 0.26 s) of a slot.                                         [sub_10022CE0]
     void stopSlot(int slot);
+    // Play the songs of a slot once instead of looping them (every channel stops at the end of its own text, like a channel without a loop
+    // point).  Not in the original.  Call it before playSong/loadSong(play=true); it stays set until changed.
+    void setLooping(int slot, bool on);
     // Cut a slot at once, with NO fade: its channels stop, and the mixer keys off the chip voices they were using, so FM notes die away through
     // their own release (a PSG note stops instantly).  This is the original's stop+reset (sub_10022C80), which it uses internally before
     // loading a song.  OPNStopSE (stopSlot) is the version with the quick fade-out.
