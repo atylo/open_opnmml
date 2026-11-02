@@ -50,7 +50,7 @@ Everything below was compared with the ORIGINAL plugin DLL by running its own co
   line and compiled output (bytecode, tone and envelope tables) as the DLL's compiler.
 * **Random songs**: about 100 random songs using every bytecode command, on random devices (also combinations the game never
   uses), give identical audio.
-* **Recordings of the game itself** (Windows sound enhancements switched off, see `calib/`): a test song of 64 FM and PSG tones has the same
+* **Recordings of the game itself** (Windows sound enhancements switched off): a test song of 64 FM and PSG tones has the same
   level to three decimals (DS mode on and off) and the same tuning (0.0 ppm); the PSG square waves are sample-for-sample identical in 9 or
   10 of 13 tones.  A whole song (`bgm05_fm3`, 98 s) runs at the same speed to 0.03 ppm, every frequency band has the ratio 1.000 and the waveforms
   correlate at 0.994 in 100 ms windows.  (The speed match also shows that the game really has the tempo rounding described below.)
@@ -95,4 +95,4 @@ Real `.mus` files were written against these behaviours, so they are copied exac
 
 A recording made with Windows sound enhancements ON (here: SoundAlive) shows a smooth tilt, about 0.92x below 300 Hz and 1.23x above 4 kHz; the same
 tilt appears on a plain WAV file played without the game, so it is the sound-card setting and not the game or the engine.  Record with the
-enhancements off (see `calib/README_CALIB.txt`).
+enhancements off.
