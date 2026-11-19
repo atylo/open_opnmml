@@ -7,6 +7,10 @@
 #include "cli.hpp"
 #include "mixer.hpp"
 #include "songlen.hpp"
+#include "post.hpp"
+#include <functional>
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -36,8 +40,9 @@ static const char* kHelpHead =
 "                         at the end of its own text; nothing of the next round is played.\n"
 "                         With -t the song keeps looping until the time is up.\n"
 
-"  -v, --volume N         master volume, 0 (loudest) to 512; every +27 halves the level.\n"
-"                         Default: 32 (what the game itself uses)\n"
+"  -v, --volume N         master volume.  Every +27 halves the level, every -27 doubles it: 32 is what the game itself uses,\n"
+"                         0 is 7 dB louder, -20 is 12 dB louder.  Range -200 to 512.  Negative values are as loud as the original\n"
+"                         allows; whatever gets above full scale is clipped (a warning says how much).  Default: 32\n"
 "  -d, -debug, --debug    debug mode: unlocks the technical options (machine, mute, sample rate, gains, timer phase, noise\n"
 "                         seed, block size) and prints the settings that were used.  They are only accepted, and only listed\n"
 "                         here, when this option is given:   mmlplay -d --help\n"
@@ -64,6 +69,17 @@ static const char* kHelpDebug =
 "  -s, --noise-seed N     seed of the random table used by the X1 chip's noise generator and the random LFO waveform.\n"
 "                         Default: 1, which is the original's table (Visual C++ rand() that was never seeded).  The PSG noise\n"
 "                         does not use this table (it is a fixed shift register), so this seed does not change it.\n"
+"  -G, --gain DB|normalize  plain gain in dB (-60 to 60) applied at the very end, or the word normalize: the gain is chosen so that the\n"
+"                         loudest sample of the file reaches full scale (the song is rendered twice).  A fixed gain is the same\n"
+"                         for every song; normalize adapts to each song.  Default: none\n"
+"  -R, --mimic-release    make the file sound like the public release of the soundtrack, in one switch: DC filter, equaliser\n"
+"                         'release', gain +12 dB, 0.45 s of silence at the start, then one pass of the song, the start of the\n"
+"                         next round, and an 8 s fade-out (starting 0.9 s into the next round) followed by 2 s of silence.  The\n"
+"                         numbers were measured on the release of bgm01_x1 (see calib/).  -G, -e (also -e none) and -c still\n"
+"                         change their part; with -t the length is that time and the fade-out ends 2 s before it.\n"
+"  -c, --dc-block         remove the DC offset of the PSG output with a 15 Hz high-pass (inaudible; centres the waveform)\n"
+"  -e, --eq release       apply the gentle equaliser of the public release of the soundtrack (+1.4 dB below 220 Hz, -0.6 dB around\n"
+"                         5.5 kHz, +1.7 dB above 11 kHz).  -e none = off (default).  Order of the steps: DC filter, equaliser, gain\n"
 "  -b, --block N          frames rendered per engine call, 64 to 65536.  Default: 128, the size the original's DirectSound\n"
 "                         path uses.  It does not change how the music sounds, but it moves note onsets by a few samples,\n"
 "                         which changes the waveform at the sample level (as in the original).\n";
@@ -86,7 +102,7 @@ static const char* kHelpTail =
 struct DebugOption { const char* shortName; const char* longName; };
 static const DebugOption kDebugOptions[] = {
     {"-dev", "--device"}, {"-m", "--mute"}, {"-r", "--rate"}, {"-g", "--fm-gain"},
-    {"-o", "--total-offset"}, {"-p", "--phase"}, {"-s", "--noise-seed"}, {"-b", "--block"}};
+    {"-o", "--total-offset"}, {"-p", "--phase"}, {"-s", "--noise-seed"}, {"-b", "--block"}, {"-G", "--gain"}, {"-e", "--eq"}};
 
 static bool isDebugFlag(const char* a) { return !strcmp(a, "-d") || !strcmp(a, "-debug") || !strcmp(a, "--debug"); }
 static bool isHelpFlag(const char* a)  { return !strcmp(a, "-h") || !strcmp(a, "--help") || !strcmp(a, "-?"); }
@@ -115,6 +131,8 @@ int main(int argc, char** argv) {
     int device = -1;                      // -1 = from the file
     bool deviceGiven = false;
     bool seedGiven = false;
+    bool dcBlock = false, eqRelease = false, normalize = false, gainGiven = false, eqGiven = false, mimic = false;
+    double gainDb = 0;
     std::vector<const char*> files;
 
     // ---- debug mode and help are looked for first, so the order of the options does not matter ----
@@ -129,6 +147,10 @@ int main(int argc, char** argv) {
         if (isDebugFlag(a)) continue;
         if (a[0] != '-' || a[1] == '\0') { files.push_back(a); continue; }
         if (!debug) {                      // the technical options are not available without debug mode
+            if (!strcmp(a, "-R") || !strcmp(a, "--mimic-release"))
+                return usageError("option -R (--mimic-release) is a debug option.\n       Add -d (or --debug) to the command line to use it; 'mmlplay -d --help' lists them.");
+            if (!strcmp(a, "-c") || !strcmp(a, "--dc-block"))
+                return usageError("option -c (--dc-block) is a debug option.\n       Add -d (or --debug) to the command line to use it; 'mmlplay -d --help' lists them.");
             for (const DebugOption& o : kDebugOptions) {
                 int j = i; const char* v = nullptr;
                 if (cli::matchOption(argc, argv, j, o.shortName, o.longName, v)) {
@@ -150,7 +172,7 @@ int main(int argc, char** argv) {
             else if (s == "MZ") device = Mixer::DEVICE_MZ;
             else { fprintf(stderr, "error: option -dev: unknown device '%s'.\n       Valid devices are: PC88, X1, MZ.\n", val); return 2; }
         } else if (cli::matchOption(argc, argv, i, "-v", "--volume", val)) {
-            NEED_VALUE("-v");  if (!cli::parseInt("-v", val, 0, 512, volume, "master volume, 0 = loudest", "32")) return 2;
+            NEED_VALUE("-v");  if (!cli::parseInt("-v", val, -200, 512, volume, "master volume, 0 = loud, negative = louder", "32")) return 2;
         } else if (cli::matchOption(argc, argv, i, "-m", "--mute", val)) {
             NEED_VALUE("-m");  if (!cli::parseInt("-m", val, 0, 0x7FF, mute, "bit mask of channels A-K", "0x7")) return 2;
         } else if (cli::matchOption(argc, argv, i, "-r", "--rate", val)) {
@@ -166,6 +188,21 @@ int main(int argc, char** argv) {
             NEED_VALUE("-p");  if (!cli::parseInt("-p", val, 0, 1000000, timerPhase, "timer phase", "0")) return 2;
         } else if (cli::matchOption(argc, argv, i, "-b", "--block", val)) {
             NEED_VALUE("-b");  if (!cli::parseInt("-b", val, 64, 65536, blockFrames, "frames per engine call", "1024")) return 2;
+        } else if (!strcmp(a, "-R") || !strcmp(a, "--mimic-release")) {
+            mimic = true;
+        } else if (!strcmp(a, "-c") || !strcmp(a, "--dc-block")) {
+            dcBlock = true;
+        } else if (cli::matchOption(argc, argv, i, "-G", "--gain", val)) {
+            NEED_VALUE("-G");
+            std::string w = val; for (char& c : w) c = (char)tolower((unsigned char)c);
+            if (w == "normalize" || w == "normalise" || w == "peak") { normalize = true; gainGiven = true; }
+            else { if (!cli::parseDouble("-G", val, -60, 60, gainDb, "gain in dB, or the word normalize", "11.7")) return 2; gainGiven = true; }
+        } else if (cli::matchOption(argc, argv, i, "-e", "--eq", val)) {
+            NEED_VALUE("-e");
+            std::string w = val; for (char& c : w) c = (char)tolower((unsigned char)c);
+            eqGiven = true;
+            if (w == "release") eqRelease = true; else if (w == "none" || w == "off") eqRelease = false;
+            else return usageError("option -e: the only equaliser is 'release' (or 'none').");
         } else {
             char msg[300];
             snprintf(msg, sizeof msg, "unknown option '%s'.", a);
@@ -198,20 +235,20 @@ int main(int argc, char** argv) {
     }
     if (seedGiven) Opx4::setNoiseSeed((uint32_t)noiseSeed);
 
-    // ---- set up the engine ----
-    Mixer* mx = nullptr;
-    try {
-        mx = new Mixer((int)rate);
-        deviceGiven = (device >= 0);
-        if (device < 0) device = (song.machine == M_X1) ? Mixer::DEVICE_X1 : (song.machine == M_MZ) ? Mixer::DEVICE_MZ : Mixer::DEVICE_PC88;
-        mx->setDevice(device);
-        mx->chip().setOutputGain((int)fmGain);
-        mx->setVolume((int)volume);
-    } catch (const std::exception& e) {
-        fprintf(stderr, "error: %s\n", e.what());
-        delete mx;
-        return 2;
+    // ---- --mimic-release: the settings measured on the public release (explicit -G / -e / -c still win) ----
+    // Measured on the release of bgm01_x1: the engine's time zero sits 0.452 s into the file, the fade starts 0.90 s after the end of the first
+    // pass and lasts 8.0 s, and 1.95 s of digital silence follow it.  The gain is +12.0 dB with our three-section equaliser (the same level as
+    // the release to within 0.1 dB rms; the +11.7 dB measured on the 1/3-octave bands is the gain of the equaliser's pass band).
+    const double LEAD_S = 0.452, FADE_DELAY_S = 0.90, FADE_LEN_S = 8.0, END_SILENCE_S = 1.95;
+    if (mimic) {
+        dcBlock = true;
+        if (!eqGiven) eqRelease = true;
+        if (!gainGiven) { gainGiven = true; gainDb = 12.0; }
     }
+
+    // ---- the device: from -dev, else from the file ----
+    deviceGiven = (device >= 0);
+    if (device < 0) device = (song.machine == M_X1) ? Mixer::DEVICE_X1 : (song.machine == M_MZ) ? Mixer::DEVICE_MZ : Mixer::DEVICE_PC88;
     // The sequencer picks FM or PSG voices from the CHIP, not from the file, so a file whose dialect does not match the
     // device plays on the wrong voices (the original plugin does the same).  Tell the user.
     if (song.x1Mode && device != Mixer::DEVICE_X1)
@@ -229,12 +266,6 @@ int main(int argc, char** argv) {
             fprintf(stderr, "warning: %s has music on channel(s) %s, but the MZ device has no FM sound: %s will be silent (the original plugin\n"
                             "         does the same).  Only channels D, E and F (PSG) are heard on this device.\n", inPath, silent.c_str(), silent.find(',') == std::string::npos ? "that channel" : "those channels");
     }
-    mx->setMute((unsigned)mute);
-    if (timerPhase >= mx->timerPhaseRange()) { fprintf(stderr, "error: option -p: %ld is too large for this sample rate (allowed 0..%d).\n", timerPhase, mx->timerPhaseRange() - 1); delete mx; return 2; }
-    mx->setTimerPhase((int)timerPhase);
-    // The player starts from a clean slot: setDevice wiped every slot, so this file's tones and envelopes are the only ones.
-    if (!timeGiven) mx->setLooping(3, false);         // one pass: every channel stops at the end of its own text (see below)
-    if (!mx->loadSong(3, 0, text.c_str(), true)) { fprintf(stderr, "error: %s\n", mx->lastError().c_str()); delete mx; return 1; }
 
     // ---- how much to render ----
     // Without -t the file holds exactly one pass of the song: the original never stops a looping song by itself, so its length is
@@ -248,8 +279,117 @@ int main(int argc, char** argv) {
         autoLength = false; seconds = 60.0;
     }
     long total = autoLength ? (long)((double)timing.onceMs * (double)rate / 1000.0 + 0.999999) : (long)(seconds * (double)rate + 0.5);
+    // release style: the file is  [silence][the song, one pass and on into the next round][fade-out][silence]; the engine runs for all but the lead-in
+    long leadFrames = 0, fadeStart = 0, fadeLen = 0;
+    if (mimic) {
+        autoLength = false;
+        leadFrames = (long)(LEAD_S * rate + 0.5); fadeLen = (long)(FADE_LEN_S * rate + 0.5);
+        if (!timeGiven) {
+            if (haveTiming && !timing.truncated) {
+                long passEnd = leadFrames + (long)((double)timing.onceMs * (double)rate / 1000.0 + 0.5);
+                fadeStart = passEnd + (long)(FADE_DELAY_S * rate + 0.5);
+                total = fadeStart + fadeLen + (long)(END_SILENCE_S * rate + 0.5);
+            } else {
+                fprintf(stderr, "warning: the length of the song could not be determined; using 60 s (use -t to choose a time).\n");
+                total = (long)(60.0 * rate);
+                fadeStart = total - fadeLen - (long)(END_SILENCE_S * rate + 0.5);
+            }
+        } else {
+            fadeStart = total - fadeLen - (long)(END_SILENCE_S * rate + 0.5);
+            if (fadeStart < leadFrames) fadeStart = leadFrames;
+        }
+    }
+    long engineFrames = total - leadFrames;
+
+    // ---- one fully configured engine with the song playing (made again for the first pass of -G normalize) ----
+    int buildExit = 0;
+    auto build = [&]() -> Mixer* {
+        Mixer* m = nullptr;
+        try {
+            m = new Mixer((int)rate);
+            m->setDevice(device);
+            m->chip().setOutputGain((int)fmGain);
+            m->setVolume((int)volume);
+        } catch (const std::exception& e) { fprintf(stderr, "error: %s\n", e.what()); delete m; buildExit = 2; return nullptr; }
+        m->setMute((unsigned)mute);
+        if (timerPhase >= m->timerPhaseRange()) { fprintf(stderr, "error: option -p: %ld is too large for this sample rate (allowed 0..%d).\n", timerPhase, m->timerPhaseRange() - 1); delete m; buildExit = 2; return nullptr; }
+        m->setTimerPhase((int)timerPhase);
+        // The player starts from a clean slot: setDevice wiped every slot, so this file's tones and envelopes are the only ones.
+        if (!timeGiven && !mimic) m->setLooping(3, false);   // one pass: every channel stops at the end of its own text (see below)
+        if (!m->loadSong(3, 0, text.c_str(), true)) { fprintf(stderr, "error: %s\n", m->lastError().c_str()); delete m; buildExit = 1; return nullptr; }
+        return m;
+    };
+
+    // ---- render the music (and, for one pass, the release tail); every block goes through `sink` ----
+    long tailFrames = 0; bool tailOpen = false; int rawPeak = 0;
+    typedef std::function<bool(int16_t*, int)> Sink;
+    std::vector<int16_t> block((size_t)2 * (size_t)blockFrames);
+    auto renderAll = [&](Mixer* m, const Sink& sink) -> bool {
+        rawPeak = 0; tailFrames = 0; tailOpen = false;
+        bool ok = true;
+        for (long done = 0; done < leadFrames && ok; ) {                       // release style: silence before the song (the engine waits)
+            int n = (int)((leadFrames - done) < blockFrames ? (leadFrames - done) : blockFrames);
+            std::fill(block.begin(), block.begin() + 2 * n, (int16_t)0);
+            ok = sink(block.data(), n);
+            done += n;
+        }
+        for (long done = 0; done < engineFrames && ok; ) {
+            int n = (int)((engineFrames - done) < blockFrames ? (engineFrames - done) : blockFrames);
+            m->render(block.data(), n);
+            for (int i = 0; i < 2 * n; i++) { int a = block[i] < 0 ? -block[i] : block[i]; if (a > rawPeak) rawPeak = a; }
+            ok = sink(block.data(), n);
+            done += n;
+        }
+        if (autoLength && ok) {
+            // (no cut is needed: with the loop switched off every channel has already stopped by itself and been keyed off at its own end,
+            // so the notes that are still ringing just die away through their release; nothing of the next round is ever played)
+            std::vector<int16_t> tail;
+            // The tail ends where the sound has fallen 60 dB below the loudest point of the song (0.1 % of the peak, but never less than the
+            // chip's own constant floor of about 2 steps): from there on nothing can be heard.  Give up after 5 s.  (Judged on the raw
+            // samples, before any of the optional processing.)
+            const long cap = rate * 5, window = rate / 25;
+            const int limit = (int)(rawPeak * 0.002) > 2 ? (int)(rawPeak * 0.002) : 2;       // allowed swing (peak to peak) in the last 40 ms
+            for (;;) {
+                size_t old = tail.size();
+                tail.resize(old + (size_t)2 * (size_t)blockFrames);
+                m->render(tail.data() + old, blockFrames);
+                long n = (long)(tail.size() / 2);
+                if (n >= window) {
+                    int lo = 32767, hi = -32768;
+                    for (size_t i = tail.size() - (size_t)2 * (size_t)window; i < tail.size(); i++) { if (tail[i] < lo) lo = tail[i]; if (tail[i] > hi) hi = tail[i]; }
+                    if (hi - lo <= limit) { tailFrames = n - window; break; }
+                }
+                if (n >= cap) { tailFrames = n; tailOpen = true; break; }
+            }
+            for (long i = 0; i < 2 * tailFrames; i++) { int a = tail[i] < 0 ? -tail[i] : tail[i]; if (a > rawPeak) rawPeak = a; }
+            for (long done = 0; done < tailFrames && ok; ) {
+                int n = (int)((tailFrames - done) < blockFrames ? (tailFrames - done) : blockFrames);
+                ok = sink(tail.data() + 2 * done, n);
+                done += n;
+            }
+        }
+        return ok;
+    };
+
+    // ---- optional processing after the engine (not in the original): DC filter, equaliser, gain ----
+    PostChain chain(0 + (int)rate, dcBlock, eqRelease);
+    double normFactor = 1.0;
+    if (normalize) {                                      // first pass: only measure the loudest sample after the DC filter and equaliser
+        Mixer* probeMixer = build();
+        if (!probeMixer) return buildExit;
+        PostChain probe((int)rate, dcBlock, eqRelease);
+        if (mimic) probe.setFade(fadeStart, fadeLen);
+        renderAll(probeMixer, [&](int16_t* b, int n) { probe.process(b, n); return true; });
+        delete probeMixer;
+        double pk = probe.peakBeforeGain();
+        normFactor = pk > 0 ? std::floor(32767.0 / pk * 1e6) / 1e6 : 1.0;
+        chain.setGain(normFactor);
+    } else if (gainGiven) chain.setGain(std::pow(10.0, gainDb / 20.0));
+    if (mimic) chain.setFade(fadeStart, fadeLen);
 
     // ---- render, streaming straight to the file ----
+    Mixer* mx = build();
+    if (!mx) return buildExit;
     FILE* f = fopen(outPath, "wb");
     if (!f) { fprintf(stderr, "error: cannot create '%s': %s\n", outPath, strerror(errno)); delete mx; return 1; }
     auto writeHeader = [&](long frames) {            // rewritten at the end, when the length of the release tail is known
@@ -259,41 +399,12 @@ int main(int argc, char** argv) {
         put32(f, (uint32_t)rate); put32(f, (uint32_t)rate * 4); put16(f, 4); put16(f, 16); fwrite("data", 1, 4, f); put32(f, bytes);
     };
     writeHeader(total);
-    std::vector<int16_t> block((size_t)2 * (size_t)blockFrames);
-    int peak = 0;
-    bool writeOk = true;
-    for (long done = 0; done < total && writeOk; ) {
-        int n = (int)((total - done) < blockFrames ? (total - done) : blockFrames);
-        mx->render(block.data(), n);
-        for (int i = 0; i < 2 * n; i++) { int a = block[i] < 0 ? -block[i] : block[i]; if (a > peak) peak = a; }
-        writeOk = fwrite(block.data(), 4, (size_t)n, f) == (size_t)n;
-        done += n;
-    }
-    long tailFrames = 0; bool tailOpen = false;
-    if (autoLength && writeOk) {
-        // (no cut is needed: with the loop switched off every channel has already stopped by itself and been keyed off at its own end,
-        // so the notes that are still ringing just die away through their release; nothing of the next round is ever played)
-        std::vector<int16_t> tail;
-        // The tail ends where the sound has fallen 60 dB below the loudest point of the song (0.1 % of the peak, but never less than the
-        // chip's own constant floor of about 2 steps): from there on nothing can be heard.  Give up after 5 s.
-        const long cap = rate * 5, window = rate / 25;
-        const int limit = (int)(peak * 0.002) > 2 ? (int)(peak * 0.002) : 2;       // allowed swing (peak to peak) in the last 40 ms
-        for (;;) {
-            size_t old = tail.size();
-            tail.resize(old + (size_t)2 * (size_t)blockFrames);
-            mx->render(tail.data() + old, blockFrames);
-            long n = (long)(tail.size() / 2);
-            if (n >= window) {
-                int lo = 32767, hi = -32768;
-                for (size_t i = tail.size() - (size_t)2 * (size_t)window; i < tail.size(); i++) { if (tail[i] < lo) lo = tail[i]; if (tail[i] > hi) hi = tail[i]; }
-                if (hi - lo <= limit) { tailFrames = n - window; break; }
-            }
-            if (n >= cap) { tailFrames = n; tailOpen = true; break; }
-        }
-        for (long i = 0; i < 2 * tailFrames; i++) { int a = tail[i] < 0 ? -tail[i] : tail[i]; if (a > peak) peak = a; }
-        writeOk = fwrite(tail.data(), 4, (size_t)tailFrames, f) == (size_t)tailFrames;
-        writeHeader(total + tailFrames);
-    }
+    bool writeOk = renderAll(mx, [&](int16_t* b, int n) {
+        if (chain.active()) chain.process(b, n);
+        return fwrite(b, 4, (size_t)n, f) == (size_t)n;
+    });
+    if (writeOk && autoLength) writeHeader(total + tailFrames);
+    int peak = chain.active() ? chain.peakOut() : rawPeak;
     if (fclose(f) != 0) writeOk = false;
     if (!writeOk) {
         fprintf(stderr, "error: writing '%s' failed (disk full or no permission?).\n", outPath);
@@ -321,6 +432,15 @@ int main(int argc, char** argv) {
     else            printf("  length  : %.1f s at %ld Hz (%ld frames)\n", (double)total / rate, rate, total);
     if (tailOpen) printf("  warning : the sound had not settled 5 s after the end of the music; the file ends there.\n");
     printf("  volume  : %ld   peak level: %.0f%% of full scale\n", volume, 100.0 * peak / 32767.0);
+    if (chain.active()) {
+        printf("  post    :");
+        if (dcBlock) printf(" DC filter;");
+        if (eqRelease) printf(" equaliser 'release';");
+        if (mimic) printf(" release style (%.2f s silence first, fade-out %.1f s from %.1f s, file ends at %.1f s);", (double)leadFrames / rate, (double)fadeLen / rate, (double)fadeStart / rate, (double)total / rate);
+        if (normalize) printf(" gain %+.2f dB (normalized to full scale);", 20 * std::log10(normFactor));
+        else if (gainGiven) printf(" gain %+.2f dB;", gainDb);
+        printf("   (after it: peak level %.0f%% of full scale)\n", 100.0 * peak / 32767.0);
+    }
     if (debug) {
         static const int chipMode[] = {0, 4, 5};
         printf("  debug   : chip mode %d, mute 0x%lX, fm-gain %ld, total-offset %ld%s, timer phase %ld, noise seed %ld%s, block %ld frames\n",
@@ -333,6 +453,7 @@ int main(int argc, char** argv) {
     }
     if (peak == 0) printf("  warning : the output is silent (all channels muted, or the song produced no sound in this time).\n");
     if (mx->clippedSamples() > 0) printf("  warning : %ld samples were clipped - lower the volume with a larger -v value.\n", mx->clippedSamples());
+    if (chain.clippedSamples() > 0) printf("  warning : %ld samples were clipped by the gain - use a smaller -G value or -G normalize.\n", chain.clippedSamples());
     delete mx;
     return 0;
 }

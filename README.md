@@ -1,4 +1,4 @@
-# opnmml - open-source compiler and player for a special MML format
+# opnmml - open-source player for the `.mus` MML music format
 
 A from-scratch C++ port of a game music plugin (an "OPN MML decoder"): it reads `.mus` MML text files
 and renders them to audio, emulating the sound hardware of the PC-88 (YM2203 FM + PSG), Sharp X1 (YM2151 FM + PSG)
@@ -7,17 +7,44 @@ against recordings of the original plugin. No code of the original host applicat
 
 ## Build and use
 
-    make                      # in an MSYS2 MinGW64 shell; produces mmlplay, mmltrace, mmldump
+    make                      # in an MSYS2 MinGW64 shell; produces mmlplay, mmltrace, mmldump and mmlplayer
     mmlplay --help            # the everyday options;   mmlplay -d --help   also lists the debug-mode options
 
     mmlplay song.mus song.wav                         # exactly one pass of the song (no looping, no fade-out), machine taken from the file
     mmlplay song.mus song.wav -t 120 -v 24            # 120 s (the song keeps looping), quieter
     mmlplay song.mus psg.wav -t 30 -d -m 0x7          # debug mode: mute channels A,B,C (FM on PC-88): hear only the PSG
+    mmlplay song.mus loud.wav -v -20                  # 12 dB louder (a negative volume amplifies; loud parts may clip, a warning says so)
+    mmlplay song.mus rel.wav -d -c -e release -G 11.7  # debug mode: DC filter, the equaliser of the public release, +11.7 dB
+    mmlplay song.mus rel.wav -d -R                    # debug mode, all of that at once plus the release's 0.45 s of silence and 8 s fade-out
     mmldump song.mus -l                               # what the compiler made of the file, and how long the song is
     mmltrace song.mus -t 3000                         # chip register writes of the first 3 seconds
+    mmlplayer bgm                                     # the interactive player: every .mus file of the folder bgm, controlled from the keyboard
 
 Options are `-x value` (letter, space, value only: `-v 40`, not `-v volume=40`); long forms `--volume 40` and
 `--volume=40` work too. Wrong or out-of-range values stop with an explanation and a non-zero exit status.
+
+## The interactive player (`mmlplayer`)
+
+    mmlplayer PATH [PATH ...]       PATH = a .mus file, or a folder (every .mus file in it, by name; not its sub-folders)
+    mmlplayer --once PATH ...       play every song once and go on to the next file (default: songs loop for ever, like in the game)
+
+| Key | Action |
+|---|---|
+| space | pause / continue (after a stop: play again) |
+| `s` | stop with the game's quick fade (about 0.26 s) |
+| `n` / `p` | next / previous file (fade, then switch; wraps round) |
+| `+` / `-` | louder / quieter (4 volume steps = about 0.9 dB per press) |
+| `[` / `]` | slower / faster by 5 beats per minute (the song's own `t` commands change the tempo again) |
+| `A` ... `K` | switch that channel off / on (all channels are on again with the next file) |
+| `?` | list the keys;  `q` or Esc: quit |
+
+The machine (PC-88, X1, MZ) comes from the file's `#machine` line, and each file is played from a fresh engine.  The status line shows
+`[number/count] name  machine  time/length of one pass  vol  tempo  channels  state`; in the channel list a letter is a channel that plays,
+`-` a channel without music (or one that has finished) and `.` a channel that you switched off.  A song that has no loop point (or ends with
+a fade-out) ends by itself in either mode, and the player goes on to the next file; after the last file the program ends.
+
+The sound goes to the sound card through the Windows multimedia API (`audio_winmm.hpp`, waveOut, no extra libraries; the Makefile adds
+`-lwinmm`).  Everything else is in `player.cpp`, which has no operating-system code and is tested without a sound card (`verify/player_test.sh`).
 
 ## How it works
 
@@ -33,6 +60,7 @@ Options are `-x value` (letter, space, value only: `-v 40`, not `-v volume=40`);
 | `chiptables.inc`, `tables.inc` | Lookup tables extracted from the original, each documented with its original address. |
 | `songlen.cpp` | Song length: a silent dry run of the sequencer that finds the end of the first pass, the loop start and the loop length. |
 | `mmlplay.cpp`, `mmltrace.cpp`, `mmldump.cpp`, `cli.hpp` | The command-line tools and their shared argument parser. |
+| `player.cpp/.hpp`, `audio_winmm.hpp`, `mmlplayer.cpp` | The interactive player: playlist, keys, status line and the sound hand-out (`player`); the Windows sound output (`audio_winmm.hpp`); the command line and keyboard (`mmlplayer.cpp`). |
 
 Function names in comments such as `[sub_1001A6E0]` are the names of the original functions (the number is their address
 in the original), so any function can be compared against the original code. The chip keeps the original's flat state layout (same dword numbers) on purpose; the names
@@ -50,13 +78,18 @@ Everything below was compared with the ORIGINAL plugin DLL by running its own co
   line and compiled output (bytecode, tone and envelope tables) as the DLL's compiler.
 * **Random songs**: about 100 random songs using every bytecode command, on random devices (also combinations the game never
   uses), give identical audio.
-* **Recordings of the game itself** (Windows sound enhancements switched off): a test song of 64 FM and PSG tones has the same
+* **Recordings of the game itself** (Windows sound enhancements switched off, see `calib/`): a test song of 64 FM and PSG tones has the same
   level to three decimals (DS mode on and off) and the same tuning (0.0 ppm); the PSG square waves are sample-for-sample identical in 9 or
   10 of 13 tones.  A whole song (`bgm05_fm3`, 98 s) runs at the same speed to 0.03 ppm, every frequency band has the ratio 1.000 and the waveforms
   correlate at 0.994 in 100 ms windows.  (The speed match also shows that the game really has the tempo rounding described below.)
 * **The public release of a song** (`bgm01_x1`): same notes, timing and tuning; it differs only by post-production (louder, a gentle equaliser,
   no DC offset, a fade-out).  With a gain, an equaliser and a DC filter applied to our render the level and tone agree within 0.2 dB.
 * Sanitizer runs (AddressSanitizer/UBSan) and corrupted-input tests: no crashes.
+* **Interactive player** (`player.cpp`, `verify/player_test.sh`, no sound card needed): the sound it hands out is sample-identical to the engine driven
+  directly and to `mmlplay -t`, whatever chunk size it is pulled in and through a fake sound device; every key (pause, volume, tempo, channels,
+  stop fade, next / previous, once / loop, bad files, folders) is checked against the engine given the same operation at the same frame; 103
+  checks, clean under AddressSanitizer/UBSan, and 14 deliberate breakages of the player are all caught.  The Windows sound output and the keyboard
+  code (about 150 lines) were compiled for Windows but not run in the test environment.
 
 ## Differences from the original
 
@@ -67,9 +100,11 @@ Things this port does differently ON PURPOSE:
    original clears the wrong title when a song is loaded (the title of song 11 x N instead of N, which corrupts memory for N >= 6); the port clears
    the right one.  A song that fails to compile leaves the slot as it was (the original keeps half-compiled data).  An out-of-range slot is an error.
 2. **Additions that the original does not have:** play a song once instead of looping it (`Sequencer::setLooping`), the measurement of a song's length
-   (`songlen.cpp`), the one-pass output of `mmlplay` with a natural release tail, the debug mode with its options, and warnings when the device and the
-   file do not fit (a PC-88 file on the X1 chip, music on channels that are silent on the MZ chip).  The master volume only accepts 0 to 512 (the
-   original takes any number).
+   (`songlen.cpp`), the one-pass output of `mmlplay` with a natural release tail, the interactive player `mmlplayer`, the debug mode with its options, and warnings when the device and the
+   file do not fit (a PC-88 file on the X1 chip, music on channels that are silent on the MZ chip).  The master volume accepts -200 to 512 (the original takes any number; -200 is already
+   45 dB of clipping).  Optional processing after the engine, off by default (debug mode: `-G` gain or normalise, `-c` DC filter, `-e release`
+   equaliser, and `-R` for all of it at once together with the silence at the start and the fade-out of the public release; `-v` with a
+   negative value is not a debug option).
 3. **Not ported:** everything that only talks to the host program (the script class, the sound decoder interface, DirectSound).
 4. Output is sample-exact only for a given render block size (`-b`, default 128, which is what the DLL's DirectSound path uses): the 1 ms sequencer
    stepping inside a block shifts note onsets by a few samples when the block size changes.  It sounds the same.
@@ -95,4 +130,4 @@ Real `.mus` files were written against these behaviours, so they are copied exac
 
 A recording made with Windows sound enhancements ON (here: SoundAlive) shows a smooth tilt, about 0.92x below 300 Hz and 1.23x above 4 kHz; the same
 tilt appears on a plain WAV file played without the game, so it is the sound-card setting and not the game or the engine.  Record with the
-enhancements off.
+enhancements off (see `calib/README_CALIB.txt`).

@@ -37,7 +37,7 @@ bool Mixer::setDevice(int dev) {
 }
 
 void Mixer::setVolume(int v) {
-    if (v < 0 || v > 512) throw std::invalid_argument("volume must be between 0 and 512");
+    if (v < -200 || v > 512) throw std::invalid_argument("volume must be between -200 and 512");
     gain = (int)(std::pow(2.0, (double)v * -0.0375) * 256.0);
 }
 
