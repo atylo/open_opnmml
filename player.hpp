@@ -34,14 +34,17 @@ struct AudioOut {
 class Player {
 public:
     struct Options {
-        bool once = false;      // false: songs loop for ever, like the game.  true: every channel stops at the end of its own text.
+        bool once = false;      // the mode the player starts in.  false: songs loop for ever, like the game.  true: every channel stops at the
+                                // end of its own text.  The `l` key switches it while playing; the choice stays for the next files.
         int  rate = 44100;      // sample rate of the sound (the game uses 44100)
     };
     explicit Player(const Options& o);
 
     // ---- the playlist ---------------------------------------------------------------------------------------------------------------------
-    // Add a file, or every .mus file of a folder (not the sub-folders), sorted by name.  Returns false when nothing was added; the reason
-    // is queued as a message.  A file is only read when its turn comes, so a bad file shows up then.
+    // Add a file, or every .mus file of a folder and of all the folders below it.  In a folder the files come first (sorted by name), then the
+    // sub-folders (sorted by name), each handled in the same way.  Sub-folders that are links are not followed, and folders nested more than
+    // 12 levels deep are not searched.  Returns false when nothing was added; the reason is queued as a message.  A file is only read when its
+    // turn comes, so a bad file shows up then.
     bool addPath(const std::string& path);
     int  trackCount() const { return (int)files.size(); }
     const std::string& trackPath(int i) const { return files[i]; }
@@ -50,10 +53,13 @@ public:
     bool begin();
 
     // ---- controls -------------------------------------------------------------------------------------------------------------------------
-    //   space  pause / continue (and play again after a stop)      s  stop with the game's quick fade (about 0.26 s)
-    //   + =    louder      -  quieter                                [  ]  slower / faster (5 beats per minute)
-    //   A..K   switch a channel off / on (letters in either case)   n  next file     p  previous file
-    //   ?      list the keys                                          q  Esc  quit
+    //   space    pause / continue (and play again after a stop)      s     stop with the game's quick fade (about 0.26 s)
+    //   Left     previous file      Right  next file                 l     switch between "loop" and "once" while playing
+    //   Up       louder             Down   quieter                   [  ]  slower / faster (5 beats per minute)
+    //   1..9 0 K switch channel A..I, J and K off / on (1 = A, 2 = B ... 9 = I, 0 = J)
+    //   h        show / hide the list of the keys                    q  Esc  Ctrl-C  quit
+    // Ordinary keys are given as their character code.  The arrow keys have no character: the front end gives the kKey... codes.
+    static const int kKeyLeft = 1000, kKeyRight = 1001, kKeyUp = 1002, kKeyDown = 1003;
     void key(int ch);
     bool wantsQuit() const { return quitting; }
     // True when the player has nothing more to do: the last track ended by itself.  (Stopping with `s` does not count: space plays again.)
@@ -66,19 +72,27 @@ public:
     void pump(AudioOut& out, int chunk = 512);
 
     // ---- what to show ---------------------------------------------------------------------------------------------------------------------
-    // Lines of text that appeared since the last call (a new file started, an error, the key list ...).
-    std::vector<std::string> takeMessages();
-    // One line of at most width-1 characters: track number, file name, machine, time, volume, tempo, channels, state.
+    // The screen is a block of lines that the front end draws in place and redraws when it changes (see screen.hpp):
+    //   1. the title of the music (an empty line when the file has none)
+    //   2. the file name, the machine and the place in the list ("bgm01_opm.mus   X1   track 1 of 55")
+    //   3. the status line (below)
+    //   and, while the help is switched on with the h key, the list of the keys.
+    std::vector<std::string> screenLines(int width = 79) const;
+    // One line of at most width-1 characters: state, time / length, loop or once, volume, tempo, channels (A..K), and a hint for the help key.
     std::string statusLine(int width = 79) const;
+    // Lines that have to stay on the screen as they are: errors, warnings, the end of the playlist.  (Everything else is in screenLines.)
+    std::vector<std::string> takeMessages();
+    bool helpShown() const { return showHelp; }
 
     // ---- read-only state (the tests use these) --------------------------------------------------------------------------------------------
     enum State { IDLE, PLAYING, STOPPING, TAIL };   // IDLE: nothing sounds.  STOPPING: the quick fade runs.  TAIL: the music is over, the last notes die away
     State state() const { return st; }
     bool  paused() const { return isPaused; }
+    bool  playOnce() const { return once; }          // true: "once", false: "loop"
     int   index() const { return cur; }              // the current track (0-based), -1 before begin()
     int   volume() const { return vol; }             // master volume as the engine takes it: every +27 halves the level; 32 is the game's value
     unsigned muteMask() const { return mute; }       // bit n set = channel n (A = 0) is switched off
-    long  framesDelivered() const { return delivered; }   // frames of the current track handed out so far
+    int64_t framesDelivered() const { return delivered; }   // frames of the current track handed out so far (64 bits: a long is only 32 bits on Windows)
     const Mixer* mixer() const { return mx.get(); }
     static const int kBlock = 128;                   // engine block, in frames
 
@@ -91,10 +105,12 @@ private:
     void afterTail();
     bool anyChannelActive() const;
     void say(const std::string& s) { msgs.push_back(s); }
-    void listKeys();
+    static std::vector<std::string> helpLines();
+    const char* shownState() const;
     int  nChannels() const { return x1Dialect ? 11 : 6; }
 
     Options opt;
+    bool once;                           // the current mode (starts as opt.once)
     std::vector<std::string> files;
     std::vector<std::string> msgs;
 
@@ -107,9 +123,10 @@ private:
     int  vol = 32;
     unsigned mute = 0;
     bool x1Dialect = false;
-    std::string deviceName, trackName;
+    std::string deviceName, titleText, infoText;
+    bool showHelp = false;
     long onceMs = -1;                    // length of one pass in ms, -1 = unknown
-    long delivered = 0;
+    int64_t delivered = 0;
 
     // the block that is being handed out, and what is needed to see when the sound has died away
     int16_t carry[kBlock * 2];

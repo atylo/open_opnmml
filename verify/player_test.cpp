@@ -10,9 +10,10 @@
 //   * Pulling the sound in different chunk sizes (1 frame ... 50000) and through a fake sound device must give the same stream.
 //   * Playlist handling, next / previous with wrap-around, the stop fade (its length is measured on the engine), once / loop mode, files that
 //     cannot be played, the status line, and a long run of random keys (build this test with -fsanitize=address,undefined to catch memory errors).
-// verify/player_test.sh builds and runs it, and also runs the mutation tests (the player is broken on purpose in fourteen ways: each must be caught).
+// verify/player_test.sh builds and runs it, and also runs the mutation tests (the player is broken on purpose in 24 ways: each must be caught).
 // ================================================================================================================
-#include "../player.hpp"
+#include "player.hpp"
+#include "screen.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -124,6 +125,29 @@ struct FakeOut : AudioOut {
     void advance(int ms) { queued -= (long)RATE * ms / 1000; if (queued < 0) queued = 0; }
 };
 
+// A console with a cursor, a fixed number of rows and scrolling at the bottom (like a real one): the screen block is tested against it.
+struct FakeConsole : Terminal {
+    int W, R, r = 0, c = 0; long scrolls = 0;
+    std::vector<std::string> rows;
+    FakeConsole(int w, int h) : W(w), R(h), rows((size_t)h, std::string((size_t)w, ' ')) {}
+    int width() override { return W; }
+    void lineFeed() { if (r == R - 1) { rows.erase(rows.begin()); rows.push_back(std::string((size_t)W, ' ')); scrolls++; } else r++; }
+    void write(const std::string& t) override { for (size_t i = 0; i < t.size(); i++) { if (c >= W) { c = 0; lineFeed(); } rows[(size_t)r][(size_t)c++] = t[i]; } }
+    void newline() override { c = 0; lineFeed(); }
+    void up(int n) override { r -= n; if (r < 0) r = 0; c = 0; }
+    void flush() override {}
+    // what is on the screen: trailing blanks of every row and trailing blank rows are cut off
+    std::vector<std::string> screen() const {
+        std::vector<std::string> v;
+        for (size_t i = 0; i < rows.size(); i++) { size_t e = rows[i].find_last_not_of(' '); v.push_back(e == std::string::npos ? "" : rows[i].substr(0, e + 1)); }
+        while (!v.empty() && v.back().empty()) v.pop_back();
+        return v;
+    }
+    bool lastColumnUsed() const { for (size_t i = 0; i < rows.size(); i++) if (rows[i][(size_t)W - 1] != ' ') return true; return false; }
+};
+typedef std::vector<std::string> Lines;
+static std::string rtrim(const std::string& s) { size_t e = s.find_last_not_of(' '); return e == std::string::npos ? "" : s.substr(0, e + 1); }
+
 int main(int argc, char** argv) {
     std::string root = argc > 1 ? argv[1] : "..";
     const std::string f1 = root + "/bgm/bgm01_fm3.mus", f2 = root + "/bgm/bgm02_fm3.mus", f3 = root + "/bgm/bgm03_fm3.mus";
@@ -192,56 +216,68 @@ int main(int argc, char** argv) {
     {
         auto p = makePlayer({f1});
         Pcm got = pullBlocks(*p, 100);
-        p->key('+'); p->key('+'); p->key('=');
-        CHECK(p->volume() == 20, "three presses of + : 32 -> 20 (4 per press)");
+        p->key(Player::kKeyUp); p->key(Player::kKeyUp); p->key(Player::kKeyUp);
+        CHECK(p->volume() == 20, "three presses of Up: 32 -> 20 (4 per press)");
         Pcm more = pullBlocks(*p, 200);
         got.insert(got.end(), more.begin(), more.end());
         Ref r(t1); Pcm ref; r.blocks(ref, 100); r.m->setVolume(20); r.blocks(ref, 200);
         CHECK(same(got, ref) == ref.size(), "louder: identical to the engine with the same volume from the same frame");
-        p->key('-'); p->key('_');
-        CHECK(p->volume() == 28, "two presses of - : 20 -> 28");
-        for (int i = 0; i < 100; i++) p->key('+');
-        CHECK(p->volume() == -200, "+ stops at -200");
-        for (int i = 0; i < 300; i++) p->key('-');
-        CHECK(p->volume() == 512, "- stops at 512");
+        p->key(Player::kKeyDown); p->key(Player::kKeyDown);
+        CHECK(p->volume() == 28, "two presses of Down: 20 -> 28");
+        p->key('+'); p->key('-'); p->key('='); p->key('_');
+        CHECK(p->volume() == 28, "+ and - no longer change the volume");
+        for (int i = 0; i < 100; i++) p->key(Player::kKeyUp);
+        CHECK(p->volume() == -200, "Up stops at -200");
+        for (int i = 0; i < 300; i++) p->key(Player::kKeyDown);
+        CHECK(p->volume() == 512, "Down stops at 512");
         pullBlocks(*p, 4);
         CHECK(std::string(p->statusLine()).find("vol 512") != std::string::npos, "status line shows the volume");
     }
 
     // -----------------------------------------------------------------------------------------------------------------------------------
-    section("4. channels");
+    section("4. channels (keys 1 2 3 4 5 6 7 8 9 0 K)");
     {
         auto p = makePlayer({f1});
         Pcm got = pullBlocks(*p, 100);
-        p->key('C');
-        CHECK(p->muteMask() == 4, "C switches channel C off (bit 2)");
-        CHECK(std::string(p->statusLine()).find("tempo") != std::string::npos, "status line present");
+        p->key('3');
+        CHECK(p->muteMask() == 4, "key 3 switches channel 3 (C) off (bit 2)");
         Pcm a = pullBlocks(*p, 100);
-        p->key('c');
-        CHECK(p->muteMask() == 0, "c (lower case) switches it on again");
+        p->key('3');
+        CHECK(p->muteMask() == 0, "key 3 again switches it on");
         Pcm b = pullBlocks(*p, 100);
         got.insert(got.end(), a.begin(), a.end()); got.insert(got.end(), b.begin(), b.end());
         Ref r(t1); Pcm ref; r.blocks(ref, 100); r.m->setMute(4); r.blocks(ref, 100); r.m->setMute(0); r.blocks(ref, 100);
         CHECK(same(got, ref) == ref.size(), "mute and unmute identical to the engine");
         p->takeMessages();
-        p->key('G');
-        CHECK(p->muteMask() == 0 && hasMessage(p->takeMessages(), "does not exist"), "a PC-88 file has no channel G: message, nothing changes");
+        p->key('7');
+        CHECK(p->muteMask() == 0 && p->takeMessages().empty(), "a PC-88 file has channels A-F only: key 7 does nothing and says nothing");
+        p->key('0'); p->key('k');
+        p->takeMessages();
+        CHECK(p->muteMask() == 0, "0 and K (channels 10 and 11) do nothing in the PC-88 dialect");
+        p->key('c'); p->key('A'); p->key('g'); p->key('n'); p->key('p');
+        CHECK(p->muteMask() == 0 && p->index() == 0 && p->state() == Player::PLAYING, "letters do not mute channels, n and p do not change the file");
 
-        // the X1 dialect has all eleven
+        // the X1 dialect has all eleven, on the keys 1 ... 9, 0, K
         auto x = makePlayer({fx1});
         pullBlocks(*x, 4);
-        x->key('K');
-        CHECK(x->muteMask() == (1u << 10), "X1 file: K switches channel 11 off");
-        std::string st = x->statusLine();
-        size_t pos = st.find("tempo ");
-        CHECK(pos != std::string::npos, "x1 status line");
-        if (pos != std::string::npos) {
-            size_t c = st.find("  ", pos) + 2;
-            CHECK(st.size() >= c + 11 && st[c + 10] == '.', "the muted channel is shown as a dot");
+        const char keys[] = "1234567890K";
+        for (int i = 0; i < 11; i++) {
+            char what[96];
+            x->key(keys[i]);
+            snprintf(what, sizeof what, "key %c switches channel %d off (and only that one)", keys[i], i + 1);
+            CHECK(x->muteMask() == (1u << i), what);
+            x->key(keys[i]);
+            snprintf(what, sizeof what, "key %c again switches channel %d on", keys[i], i + 1);
+            CHECK(x->muteMask() == 0, what);
         }
+        x->key('k'); CHECK(x->muteMask() == (1u << 10), "k (lower case) works like K"); x->key('K');
+        x->key('1');
+        CHECK(x->statusLine().find(".BCDEFGHIJK") != std::string::npos, "the status line shows a switched-off channel as a dot");
+        x->key('1');
+        CHECK(x->statusLine().find("ABCDEFGHIJK") != std::string::npos, "and the channels by their letters A to K (the keys are numbers)");
         // the channels come back with the next file
         auto y = makePlayer({f1, f2});
-        pullBlocks(*y, 4); y->key('A'); y->key('n');
+        pullBlocks(*y, 4); y->key('1'); y->key(Player::kKeyRight);
         for (int i = 0; i < 4000 && y->index() == 0; i++) pullBlocks(*y, 1);
         CHECK(y->index() == 1 && y->muteMask() == 0, "next file: all channels on again");
     }
@@ -279,7 +315,7 @@ int main(int argc, char** argv) {
         Pcm got = pullBlocks(*p, 100);
         p->key('s');
         CHECK(p->state() == Player::STOPPING, "s starts the fade");
-        CHECK(std::string(p->statusLine()).find("fading") != std::string::npos, "status line says fading");
+        CHECK(p->statusLine().compare(0, 7, "stopped") == 0, "status line says stopped at once (the short fade is not a state of its own)");
         int n = 0;
         while (p->state() != Player::IDLE && n < 3000) { Pcm b = pullBlocks(*p, 1); got.insert(got.end(), b.begin(), b.end()); n++; }
         CHECK(p->state() == Player::IDLE, "the sound dies away and the player goes idle");
@@ -290,7 +326,7 @@ int main(int argc, char** argv) {
         CHECK(allZero(got, whole), "the block that ended the tail is silent");
         CHECK(allZero(pullN(*p, 5000, {5000})), "idle: silence");
         CHECK(!p->finishedPlaylist(), "a stop is not the end of the playlist");
-        CHECK(std::string(p->statusLine()).find("stopped") != std::string::npos, "status line says stopped");
+        CHECK(p->statusLine().compare(0, 7, "stopped") == 0 && p->statusLine().find("--.-") == std::string::npos, "status line says stopped");
         p->key(' ');
         CHECK(p->state() == Player::PLAYING && p->framesDelivered() == 0 && p->index() == 0, "space after a stop plays the file again from the start");
         Pcm again = pullBlocks(*p, 5);
@@ -298,13 +334,14 @@ int main(int argc, char** argv) {
     }
 
     // -----------------------------------------------------------------------------------------------------------------------------------
-    section("7. next / previous");
+    section("7. next / previous (Right / Left arrow)");
     {
         Pcm want2; { Ref r(t2); r.blocks(want2, 30); }
         auto p = makePlayer({f1, f2, f3});
         pullBlocks(*p, 100);
-        p->key('n');
-        CHECK(p->state() == Player::STOPPING && p->index() == 0, "n starts the fade of the current file first");
+        p->key(Player::kKeyRight);
+        CHECK(p->state() == Player::STOPPING && p->index() == 0, "Right starts the fade of the current file first");
+        CHECK(p->statusLine().compare(0, 7, "playing") == 0, "the status line keeps saying playing while the next file is coming");
         int n = 0; Pcm blk;
         while (p->index() == 0 && n < 3000) { blk = pullBlocks(*p, 1); n++; }
         CHECK(p->index() == 1 && p->state() == Player::PLAYING, "then the next file plays");
@@ -313,25 +350,25 @@ int main(int argc, char** argv) {
         CHECK(same(got, want2) == got.size(), "the next file starts clean: identical to the engine from its first frame");
 
         auto settle = [](Player& q, int target) -> bool { for (int i = 0; i < 6000 && !(q.index() == target && q.state() == Player::PLAYING); i++) pullBlocks(q, 1); return q.index() == target; };
-        auto a = makePlayer({f1, f2, f3}); pullBlocks(*a, 10); a->key('n'); a->key('n');
-        CHECK(settle(*a, 2), "n twice in a row skips one file (1 is never played)");
-        auto b = makePlayer({f1, f2, f3}); pullBlocks(*b, 10); b->key('p');
-        CHECK(settle(*b, 2), "p at the first file wraps round to the last");
-        b->key('n');
-        CHECK(settle(*b, 0), "n at the last file wraps round to the first");
-        b->key('n'); b->key('p');
-        CHECK(settle(*b, 0), "n then p ends where it began");
+        auto a = makePlayer({f1, f2, f3}); pullBlocks(*a, 10); a->key(Player::kKeyRight); a->key(Player::kKeyRight);
+        CHECK(settle(*a, 2), "Right twice in a row skips one file (1 is never played)");
+        auto b = makePlayer({f1, f2, f3}); pullBlocks(*b, 10); b->key(Player::kKeyLeft);
+        CHECK(settle(*b, 2), "Left at the first file wraps round to the last");
+        b->key(Player::kKeyRight);
+        CHECK(settle(*b, 0), "Right at the last file wraps round to the first");
+        b->key(Player::kKeyRight); b->key(Player::kKeyLeft);
+        CHECK(settle(*b, 0), "Right then Left ends where it began");
 
         auto c = makePlayer({f1, f2, f3}); pullBlocks(*c, 10); c->key(' ');
-        c->key('n');
-        CHECK(c->index() == 1 && !c->paused() && c->state() == Player::PLAYING && c->framesDelivered() == 0, "n while paused switches at once");
+        c->key(Player::kKeyRight);
+        CHECK(c->index() == 1 && !c->paused() && c->state() == Player::PLAYING && c->framesDelivered() == 0, "Right while paused switches at once");
         auto d = makePlayer({f1, f2, f3}); pullBlocks(*d, 10); d->key('s');
         for (int i = 0; i < 3000 && d->state() != Player::IDLE; i++) pullBlocks(*d, 1);
-        d->key('p');
-        CHECK(d->index() == 2 && d->state() == Player::PLAYING, "p after a stop switches at once");
+        d->key(Player::kKeyLeft);
+        CHECK(d->index() == 2 && d->state() == Player::PLAYING, "Left after a stop switches at once");
 
-        auto one = makePlayer({f1}); pullBlocks(*one, 10); one->key('n');
-        CHECK(settle(*one, 0) && one->framesDelivered() < 10L * B, "n with a single file plays it again from the start");
+        auto one = makePlayer({f1}); pullBlocks(*one, 10); one->key(Player::kKeyRight);
+        CHECK(settle(*one, 0) && one->framesDelivered() < 10L * B, "Right with a single file plays it again from the start");
     }
 
     // -----------------------------------------------------------------------------------------------------------------------------------
@@ -368,7 +405,9 @@ int main(int argc, char** argv) {
         auto u = makePlayer({s1, s2});                     // a key pressed during the natural tail wins over the automatic advance
         for (int i = 0; i < 6 * RATE / B && u->state() != Player::TAIL; i++) pullBlocks(*u, 1);
         CHECK(u->state() == Player::TAIL, "reached the tail of the first song");
+        CHECK(u->statusLine().compare(0, 7, "playing") == 0, "the natural dying away of the last notes is not a state of its own");
         u->key('s');
+        CHECK(u->statusLine().compare(0, 7, "stopped") == 0, "s during the tail: stopped");
         for (int i = 0; i < 2 * RATE / B; i++) pullBlocks(*u, 1);
         CHECK(u->state() == Player::IDLE && u->index() == 0, "s during the tail cancels the automatic advance");
 
@@ -379,30 +418,98 @@ int main(int argc, char** argv) {
     }
 
     // -----------------------------------------------------------------------------------------------------------------------------------
-    section("9. playlist: files and folders");
+    section("8b. switching between loop and once while playing (key l)");
     {
-        std::string dir = tmp + "/pl", sub = dir + "/sub";
-        MKDIR(dir.c_str()); MKDIR(sub.c_str());
+        const std::string t_s2 = readText(s2);
+        auto p = makePlayer({s2});
+        Pcm got = pullBlocks(*p, 431);                      // 1.25 s of a song that loops for ever (its passes end at 0.513 s, 1.014 s, 1.515 s ...)
+        CHECK(!p->playOnce() && p->statusLine().find("  loop  ") != std::string::npos, "the default is loop, and the status line says so");
+        p->key('l');
+        CHECK(p->playOnce() && p->statusLine().find("  once  ") != std::string::npos, "l switches to once, and the status line says so");
+        int n = 0;
+        while (p->state() != Player::IDLE && n < 3000) { Pcm b = pullBlocks(*p, 1); got.insert(got.end(), b.begin(), b.end()); n++; }
+        CHECK(p->state() == Player::IDLE && p->finishedPlaylist(), "once: the song ends after the pass that was running (and with it the one-file playlist)");
+        Ref r(t_s2); Pcm ref; r.blocks(ref, 431); r.m->setLooping(3, false); r.blocks(ref, n);
+        size_t whole = got.size() - (size_t)B * 2;
+        CHECK(same(got, ref, 0, whole) == whole, "identical to the engine switched to once at the same frame");
+        CHECK(n > 0 && n * B < 5 * RATE, "and it ends soon: at the end of the running pass, plus the short tail");
+
+        auto q = makePlayer({s2});
+        Pcm gq = pullBlocks(*q, 431);
+        q->key('l'); Pcm g2 = pullBlocks(*q, 10); q->key('l');
+        CHECK(!q->playOnce(), "l twice is loop again");
+        gq.insert(gq.end(), g2.begin(), g2.end());
+        Pcm g3 = pullBlocks(*q, 3000); gq.insert(gq.end(), g3.begin(), g3.end());
+        for (int i = 0; i < 20 * RATE / B; i++) pullBlocks(*q, 1);
+        CHECK(q->state() == Player::PLAYING && !q->finishedPlaylist(), "switched back to loop in time: it plays on for ever");
+        Ref r2(t_s2); Pcm ref2; r2.blocks(ref2, 431 + 10 + 3000);
+        CHECK(same(gq, ref2) == ref2.size(), "switching there and back does not change the sound");
+
+        Player::Options o; o.once = true;
+        Player pp(o); pp.addPath(s2); pp.addPath(s2); pp.begin();
+        CHECK(pp.playOnce() && pp.statusLine().find("  once  ") != std::string::npos, "--once: the player starts in once");
+        pp.key('l');
+        CHECK(!pp.playOnce(), "and l switches it to loop");
+
+        auto w = makePlayer({s1, s2});                     // the mode stays for the next file: s2 has a loop point but now plays once
+        w->key('l');
+        for (int i = 0; i < 30 * RATE / B && !w->finishedPlaylist(); i++) pullBlocks(*w, 1);
+        CHECK(w->finishedPlaylist() && w->index() == 1, "the chosen mode stays for the next file");
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------------------------
+    section("9. playlist: files, folders and everything below them");
+    {
+        std::string dir = tmp + "/pl";
+        std::vector<std::string> made, madeDirs;
+        auto mk = [&](const std::string& d) { MKDIR(d.c_str()); madeDirs.push_back(d); };
         const std::string txt = readText(s1);
-        writeText(dir + "/b.MUS", txt); writeText(dir + "/a.mus", txt); writeText(dir + "/D.Mus", txt);
-        writeText(dir + "/c.txt", txt); writeText(sub + "/x.mus", txt);
+        auto mkf = [&](const std::string& f) { writeText(f, txt); made.push_back(f); };
+        mk(dir); mk(dir + "/sub"); mk(dir + "/sub/deeper"); mk(dir + "/Asub"); mk(dir + "/zsub"); mk(dir + "/emptysub");
+        mkf(dir + "/b.MUS"); mkf(dir + "/a.mus"); mkf(dir + "/D.Mus"); mkf(dir + "/c.txt");
+        mkf(dir + "/sub/x.mus"); mkf(dir + "/sub/deeper/y.mus"); mkf(dir + "/Asub/q.mus"); mkf(dir + "/zsub/z.mus");
         Player::Options o; Player p(o);
-        CHECK(p.addPath(dir) && p.trackCount() == 3, "a folder adds its .mus files only (any case), not the sub-folder");
-        CHECK(p.trackPath(0) == dir + "/a.mus" && p.trackPath(1) == dir + "/b.MUS" && p.trackPath(2) == dir + "/D.Mus", "sorted by name, not by case");
+        CHECK(p.addPath(dir) && p.trackCount() == 7, "a folder adds its .mus files and those of all the folders below it (any case; c.txt is not one)");
+        const char* order[] = { "/a.mus", "/b.MUS", "/D.Mus", "/Asub/q.mus", "/sub/x.mus", "/sub/deeper/y.mus", "/zsub/z.mus" };
+        bool inOrder = p.trackCount() == 7;
+        for (int i = 0; i < 7 && inOrder; i++) inOrder = p.trackPath(i) == dir + order[i];
+        CHECK(inOrder, "order: the files of a folder by name (not by case), then each sub-folder by name in the same way");
         Player p2(o);
-        CHECK(p2.addPath(dir + "/") && p2.trackCount() == 3, "a folder name with a trailing slash works");
-        CHECK(p2.addPath(s1) && p2.trackCount() == 4 && p2.trackPath(3) == s1, "files and folders mix, in the order given");
-        CHECK(p2.addPath(dir + "/c.txt") && p2.trackCount() == 5, "a file given by name is taken whatever its extension");
+        CHECK(p2.addPath(dir + "/") && p2.trackCount() == 7, "a folder name with a trailing slash works");
+        CHECK(p2.addPath(s1) && p2.trackCount() == 8 && p2.trackPath(7) == s1, "files and folders mix, in the order given");
+        CHECK(p2.addPath(dir + "/c.txt") && p2.trackCount() == 9, "a file given by name is taken whatever its extension");
         Player p3(o);
         CHECK(!p3.addPath(tmp + "/missing.mus") && hasMessage(p3.takeMessages(), "does not exist"), "a missing path is reported");
-        CHECK(!p3.addPath(sub + "x") , "another missing path");
-        std::string empty = tmp + "/empty"; MKDIR(empty.c_str());
+        std::string empty = tmp + "/empty", emptyInner = empty + "/inner"; mk(empty); mk(emptyInner);
         p3.takeMessages();
-        CHECK(!p3.addPath(empty) && hasMessage(p3.takeMessages(), "no .mus files"), "a folder without .mus files is reported");
+        CHECK(!p3.addPath(empty) && hasMessage(p3.takeMessages(), "no .mus files"), "a folder with no .mus files at all is reported");
         CHECK(p3.trackCount() == 0 && !p3.begin(), "nothing to play: begin() says so");
-        remove((dir + "/b.MUS").c_str()); remove((dir + "/a.mus").c_str()); remove((dir + "/D.Mus").c_str());
-        remove((dir + "/c.txt").c_str()); remove((sub + "/x.mus").c_str());
-        RMDIR(sub.c_str()); RMDIR(dir.c_str()); RMDIR(empty.c_str());
+
+#ifndef _WIN32
+        // a link that points back up is not followed (else the search would go round for ever)
+        std::string loop = dir + "/loop";
+        if (symlink(".", loop.c_str()) == 0) {
+            Player p4(o);
+            CHECK(p4.addPath(dir) && p4.trackCount() == 7, "a link to a folder is not followed");
+            unlink(loop.c_str());
+        }
+#endif
+        // folders more than 12 levels down are not searched
+        std::string deep = tmp + "/deep";
+        mk(deep);
+        std::string d = deep;
+        for (int i = 1; i <= 14; i++) {
+            d += "/d" + std::to_string(i);
+            mk(d);
+            if (i == 3 || i == 12 || i == 13 || i == 14) mkf(d + "/f" + std::to_string(i) + ".mus");
+        }
+        Player p5(o);
+        bool ok5 = p5.addPath(deep);
+        CHECK(ok5 && p5.trackCount() == 2, "12 levels below the given folder are searched (the files at depth 3 and 12 are found), deeper ones are not (13 and 14)");
+        CHECK(hasMessage(p5.takeMessages(), "12 levels"), "and that is said");
+
+        for (size_t i = made.size(); i-- > 0;) remove(made[i].c_str());
+        for (size_t i = madeDirs.size(); i-- > 0;) RMDIR(madeDirs[i].c_str());
     }
 
     // -----------------------------------------------------------------------------------------------------------------------------------
@@ -415,28 +522,43 @@ int main(int argc, char** argv) {
         CHECK(!q->begin(), "nothing playable: begin() fails");
         CHECK(hasMessage(q->takeMessages(), "no file could be played"), "and says so");
         auto r = makePlayer({f1, f2});
-        r->key('n');                                       // keys before/after are harmless
+        r->key(Player::kKeyRight);                         // keys before/after are harmless
         Player::Options o; Player idle(o);
-        idle.key('n'); idle.key(' '); idle.key('+'); idle.key('C');
+        idle.key(Player::kKeyRight); idle.key(' '); idle.key(Player::kKeyUp); idle.key('3'); idle.key('l'); idle.key('h');
         Pcm z = pullN(idle, 1000, {333});
         CHECK(allZero(z), "a player that has not begun is silent and ignores the keys");
         CHECK(idle.statusLine() == "", "and has no status line");
 
         auto s = makePlayer({f1, f2});
-        std::vector<std::string> m = s->takeMessages();
+        std::vector<std::string> m = s->screenLines();
         Ref ref(t1);
-        std::string head = "1/2  " + f1 + "  [PC88]";
-        CHECK(!m.empty() && m[0].compare(0, head.size(), head) == 0, "a started file is announced: number/count, path, machine");
         const std::string& title = ref.m->songTitle(3, 0);
-        CHECK(title.empty() || (!m.empty() && m[0].find("\"" + title + "\"") != std::string::npos), "with its title");
-        auto x = makePlayer({fx1}); std::vector<std::string> mx = x->takeMessages();
-        CHECK(!mx.empty() && mx[0].find("[X1]") != std::string::npos, "#machine x1 plays on the X1 chip");
+        CHECK(!title.empty() && m.size() == 3 && m[0] == title, "the screen: first line the title (no quotes, no path)");
+        CHECK(m.size() == 3 && m[1] == "bgm01_fm3.mus   PC88   track 1 of 2", "second line: the file name, the machine and where it is in the list");
+        CHECK(!hasMessage(m, "/bgm/") && !hasMessage(m, root.c_str()), "the folder is not shown");
+        CHECK(s->takeMessages().empty(), "starting a file prints nothing (the screen lines are redrawn in place)");
+        auto one = makePlayer({s1}); std::vector<std::string> mo = one->screenLines();
+        CHECK(mo.size() == 3 && mo[0] == "" && mo[1] == "short.mus   PC88", "no title: an empty first line; one file: no track number");
+        auto x = makePlayer({fx1});
+        CHECK(hasMessage(x->screenLines(), "   X1"), "#machine x1 plays on the X1 chip");
         auto z2 = makePlayer({mz}); std::vector<std::string> mm = z2->takeMessages();
-        CHECK(!mm.empty() && mm[0].find("[MZ]") != std::string::npos && hasMessage(mm, "no FM sound") && hasMessage(mm, "channel(s) A"),
-              "#machine mz: MZ chip, and a warning that the FM channel A is silent");
+        CHECK(z2->screenLines()[1] == "mz.mus   MZ" && hasMessage(mm, "no FM sound") && hasMessage(mm, "channel(s) A"),
+              "#machine mz: MZ chip, and a warning that the FM channel A is silent (a message that stays on the screen)");
         auto q2 = makePlayer({f1}); q2->takeMessages();
+        CHECK(!q2->helpShown() && q2->screenLines().size() == 3, "the help is not shown at first: three lines");
         q2->key('?');
-        CHECK(hasMessage(q2->takeMessages(), "space"), "? lists the keys");
+        CHECK(!q2->helpShown() && q2->screenLines().size() == 3, "? does nothing");
+        q2->key('h');
+        std::vector<std::string> help = q2->screenLines();
+        CHECK(q2->helpShown() && help.size() == 13, "h adds the list of the keys below the three lines");
+        CHECK(hasMessage(help, "space") && hasMessage(help, "Left / Right") && hasMessage(help, "Up / Down") && hasMessage(help, "1 2 ... 9 0 K")
+              && hasMessage(help, "hide this list"), "the list names the keys");
+        bool fits = !help.empty();
+        for (size_t i = 3; i < help.size(); i++) if (help[i].size() > 66) fits = false;
+        CHECK(fits, "every line is at most 66 characters: it fits even a narrow window");
+        CHECK(q2->takeMessages().empty(), "the list is part of the screen, not printed as messages");
+        q2->key('H');
+        CHECK(!q2->helpShown() && q2->screenLines().size() == 3, "h again (or H) hides it");
         auto q3 = makePlayer({f1});
         q3->key('q'); CHECK(q3->wantsQuit(), "q quits");
         auto q4 = makePlayer({f1}); q4->key(27); CHECK(q4->wantsQuit(), "Esc quits");
@@ -451,23 +573,42 @@ int main(int argc, char** argv) {
         pullBlocks(*p, 100);
         std::string st = p->statusLine();
         Song song; compile(t1.c_str(), song); SongTiming tm; measureSong(song, 0, tm);
-        CHECK(st.compare(0, 7, "[1/3] b") == 0, "starts with [number/count] and the file name");
+        CHECK(st.compare(0, 7, "playing") == 0, "the state comes first");
         char tempoText[32]; snprintf(tempoText, sizeof tempoText, "tempo %d  ", p->mixer()->tempo(3));
-        CHECK(st.find("PC88") != std::string::npos && st.find("vol 32") != std::string::npos && st.find(tempoText) != std::string::npos, "machine, volume, tempo (the song's own)");
-        CHECK(st.find("0:00/" + mmss(tm.onceMs)) != std::string::npos, "elapsed time / length of one pass (the length is the measured one)");
-        pullBlocks(*p, 600);                                // 700 blocks = 2.03 s in all
-        CHECK(p->statusLine().find("0:02/" + mmss(tm.onceMs)) != std::string::npos, "the clock runs");
-        CHECK(st.size() >= 7 && st.compare(st.size() - 7, 7, "playing") == 0, "ends with the state");
+        CHECK(st.find("  loop  ") != std::string::npos && st.find("vol 32") != std::string::npos && st.find(tempoText) != std::string::npos, "loop or once, volume, tempo (the song's own)");
+        CHECK(st.find("0:00 / " + mmss(tm.onceMs)) != std::string::npos, "elapsed time / length of one pass (the length is the measured one)");
+        CHECK(st.find("ABC--F") != std::string::npos, "channels: the letter of a channel that plays, - for one without music (D and E here)");
+        CHECK(st.size() >= 14 && st.compare(st.size() - 14, 14, "  h = controls") == 0, "ends with the hint for the help key");
         CHECK(st.size() <= 78, "fits a default console line");
-        std::string longName = tmp + "/a_very_long_file_name_that_would_not_fit_on_one_console_line_at_all_for_sure.mus";
-        writeText(longName, readText(fx1));
-        auto q = makePlayer({longName});
-        pullBlocks(*q, 10);
-        std::string sl = q->statusLine();
-        CHECK(sl.size() <= 78 && sl.find('~') != std::string::npos, "a long name is shortened so that the line still fits");
-        CHECK(sl.size() >= 7 && sl.compare(sl.size() - 7, 7, "playing") == 0, "and the state is still there");
-        CHECK(p->statusLine(66).size() <= 65 && p->statusLine(66).find('~') != std::string::npos, "the width can be chosen");
-        remove(longName.c_str());
+        CHECK(st.find("bgm01") == std::string::npos && st.find("track") == std::string::npos && st.find("1/3") == std::string::npos
+              && st.find("PC88") == std::string::npos && st.find('[') == std::string::npos,
+              "file name, track number and machine are not repeated here (they are shown once, when the file starts)");
+        CHECK(st.find("fading") == std::string::npos && st.find("ending") == std::string::npos, "no fading or ending message");
+        pullBlocks(*p, 600);                                // 700 blocks = 2.03 s in all
+        CHECK(p->statusLine().find("0:02 / " + mmss(tm.onceMs)) != std::string::npos, "the clock runs");
+        std::string narrow = p->statusLine(60);
+        CHECK(narrow.size() <= 59 && narrow.find("controls") == std::string::npos && narrow.find("ABC--F") != std::string::npos,
+              "on a narrow console the hint is dropped first");
+        CHECK(p->statusLine(73).find("h = controls") != std::string::npos, "and shown when there is room");
+        p->key(' ');
+        CHECK(p->statusLine().compare(0, 7, "paused ") == 0, "paused (the state field keeps its width, so the rest does not move)");
+        auto x = makePlayer({fx1});
+        pullBlocks(*x, 10);
+        CHECK(x->statusLine().find("  ABCDEFGHIJK  ") != std::string::npos, "X1: all eleven channels, A to K");
+        // the clock must not go wrong after 48 seconds (frames * 1000 does not fit in a 32-bit number; a long is 32 bits on Windows)
+        auto c = makePlayer({s2});
+        c->takeMessages();
+        CHECK(sizeof(c->framesDelivered()) == 8, "the frame counter is 64 bits");
+        long long total = 0;
+        std::string at49, at61;
+        for (int sec = 1; sec <= 61; sec++) {
+            pullN(*c, RATE, {4410});
+            total += RATE;
+            if (sec == 49) at49 = c->statusLine();
+            if (sec == 61) at61 = c->statusLine();
+        }
+        CHECK(at49.find("0:49 / ") != std::string::npos, "after 49 seconds the clock says 0:49 (not a negative number)");
+        CHECK(at61.find("1:01 / ") != std::string::npos && at61.find(":-") == std::string::npos, "after 61 seconds it says 1:01");
     }
 
     // -----------------------------------------------------------------------------------------------------------------------------------
@@ -476,10 +617,11 @@ int main(int argc, char** argv) {
         auto p = makePlayer({f1, f2, f3, s1, s2, fx1});
         unsigned seed = 777;
         auto rnd = [&]() { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
-        const char keys[] = " snpnp+-+-[]abcdefghijkABCDEFGHIJK?";
+        const int keys[] = { ' ', 's', Player::kKeyLeft, Player::kKeyRight, Player::kKeyLeft, Player::kKeyRight, Player::kKeyUp, Player::kKeyDown, Player::kKeyUp, Player::kKeyDown, '[', ']', 'l', 'l', 'h',
+                             '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'k', 'K', '?', 'a', 'n', 'p', 'x', '+', '-' };
         long frames = 0; bool ok = true;
         while (frames < 180L * RATE && ok) {
-            if (rnd() % 15 == 0) p->key(keys[rnd() % (sizeof keys - 1)]);
+            if (rnd() % 15 == 0) p->key(keys[rnd() % (sizeof keys / sizeof keys[0])]);
             int n = 1 + (int)(rnd() % 3000);
             Pcm out((size_t)n * 2);
             p->pull(out.data(), n);
@@ -490,6 +632,135 @@ int main(int argc, char** argv) {
         }
         CHECK(ok, "state stays sane");
         CHECK(!p->wantsQuit(), "never quits by itself");
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------------------------
+    section("13. the screen block: drawn once, then redrawn in place (simulated console that scrolls)");
+    {
+        // (a) at the bottom of a full window, 50 redraws: nothing is added, nothing is left over
+        FakeConsole con(40, 8);
+        for (int i = 1; i <= 6; i++) { con.write("old " + std::to_string(i)); con.newline(); }
+        ScreenBlock sb(con);
+        sb.draw({"Title", "file.mus   PC88", "playing  0:00"});
+        CHECK(con.screen() == Lines({"old 2", "old 3", "old 4", "old 5", "old 6", "Title", "file.mus   PC88", "playing  0:00"}),
+              "first draw: three lines below the earlier output (the window scrolled once to make room)");
+        for (int t = 1; t <= 50; t++) sb.draw({"Title", "file.mus   PC88", "playing  0:" + std::string(t < 10 ? "0" : "") + std::to_string(t)});
+        CHECK(con.screen() == Lines({"old 2", "old 3", "old 4", "old 5", "old 6", "Title", "file.mus   PC88", "playing  0:50"}),
+              "after 50 redraws: still the same three lines, the earlier output untouched");
+        CHECK(con.scrolls == 1 && sb.height() == 3, "and the window never scrolled again");
+        sb.draw({"Another title", "other.mus   X1   track 2 of 9", "paused   "});
+        CHECK(con.screen() == Lines({"old 2", "old 3", "old 4", "old 5", "old 6", "Another title", "other.mus   X1   track 2 of 9", "paused"}),
+              "a new file: all three lines replaced in place (a shorter text leaves nothing of the longer one)");
+
+        // (b) the list of the keys appears and disappears
+        FakeConsole c2(40, 20);
+        ScreenBlock b2(c2);
+        Lines three = {"T", "F", "S1"}, thirteen = three;
+        for (int i = 1; i <= 10; i++) thirteen.push_back("help " + std::to_string(i));
+        b2.draw(three); b2.draw(thirteen);
+        CHECK(c2.screen() == thirteen && b2.height() == 13, "the list of the keys is added below the three lines");
+        thirteen[2] = "S2"; b2.draw(thirteen);
+        CHECK(c2.screen() == thirteen, "and the status line goes on changing in place while it is shown");
+        Lines back = {"T", "F", "S3"}; b2.draw(back);
+        CHECK(c2.screen() == back && b2.height() == 3, "hidden again: the three lines remain, the rest is wiped");
+        b2.draw(thirteen); b2.draw(back); b2.draw(thirteen);
+        CHECK(c2.screen() == thirteen && c2.scrolls == 0, "showing and hiding again and again leaves nothing behind");
+
+        // (c) a message that stays: printed where the block was, the block comes back below it
+        FakeConsole c3(40, 20);
+        ScreenBlock b3(c3);
+        b3.draw(three);
+        b3.printAbove({"error: bad.mus: oops", "warning: be careful"});
+        CHECK(c3.screen() == Lines({"error: bad.mus: oops", "warning: be careful"}), "the block is erased and the two lines are printed in its place");
+        b3.draw(three);
+        CHECK(c3.screen() == Lines({"error: bad.mus: oops", "warning: be careful", "T", "F", "S1"}), "the block is drawn again below them");
+        b3.draw(thirteen);
+        b3.printAbove({"end of the playlist."});
+        b3.draw(three);
+        CHECK(c3.screen() == Lines({"error: bad.mus: oops", "warning: be careful", "end of the playlist.", "T", "F", "S1"}),
+              "also when the block was tall (the list of the keys was open): no gap, nothing left over");
+
+        // (d) a line that is too long is cut, and never reaches the last column
+        FakeConsole c4(20, 6);
+        ScreenBlock b4(c4);
+        b4.draw({"0123456789012345678901234567890", "abc"});
+        CHECK(c4.screen() == Lines({"0123456789012345678", "abc"}) && !c4.lastColumnUsed(), "a long line is cut to the width - 1 (the last column stays free)");
+        b4.draw({"x", "y"});
+        CHECK(c4.screen() == Lines({"x", "y"}), "and a shorter text afterwards wipes the rest of it");
+        FakeConsole c5(2, 4);
+        ScreenBlock b5(c5);
+        b5.draw({"abc", "def"}); b5.draw({"gh", "i"});
+        CHECK(c5.screen() == Lines({"g", "i"}), "a window of 2 columns does not crash");
+
+        // (e) the end: the shell's prompt comes on a fresh line below the block
+        FakeConsole c6(40, 10);
+        ScreenBlock b6(c6);
+        b6.draw(three); b6.finish(); c6.write("PROMPT>");
+        CHECK(c6.screen() == Lines({"T", "F", "S1", "PROMPT>"}), "finish(): the block stays and the next text starts on a new line");
+    }
+
+    // -----------------------------------------------------------------------------------------------------------------------------------
+    section("14. the player's screen, as the front end draws it (simulated console)");
+    {
+        FakeConsole con(70, 24);
+        ScreenBlock sb(con);
+        Lines shown;
+        auto refresh = [&](Player& p) {                         // what the front end does in its loop
+            Lines m = p.takeMessages();
+            if (!m.empty()) { sb.printAbove(m); shown.clear(); }
+            Lines lines = p.screenLines(con.width());
+            if (lines != shown) { sb.draw(lines); shown = lines; }
+        };
+        auto countRows = [&](const char* part) { int n = 0; Lines v = con.screen(); for (size_t i = 0; i < v.size(); i++) if (v[i].find(part) != std::string::npos) n++; return n; };
+        auto tailIsShown = [&]() {                              // the last rows of the screen are exactly the lines that were drawn last
+            Lines v = con.screen();
+            if (v.size() < shown.size()) return false;
+            for (size_t i = 0; i < shown.size(); i++) if (v[v.size() - shown.size() + i] != rtrim(shown[i].substr(0, (size_t)con.W - 1))) return false;
+            return true;
+        };
+        auto p = makePlayer({f1, bad, f2, f3});
+        refresh(*p);
+        pullBlocks(*p, 300); refresh(*p);
+        CHECK(countRows("track 1 of 4") == 1 && countRows("playing") == 1 && tailIsShown(), "the first file: title, file line, status line");
+        pullBlocks(*p, 3000); refresh(*p);
+        CHECK(countRows("playing") == 1 && countRows("0:0") == 1, "the clock goes on in the same line");
+
+        p->key(Player::kKeyRight);                              // the next file (bad.mus) cannot be played: an error, then the one after it
+        for (int i = 0; i < 4000 && p->index() == 0; i++) { pullBlocks(*p, 1); refresh(*p); }
+        refresh(*p);
+        CHECK(p->index() == 2, "the file with the error was skipped");
+        CHECK(countRows("bad.mus") == 1, "the error is printed once, as an ordinary line");
+        CHECK(countRows("track 1 of 4") == 0 && countRows("track 3 of 4") == 1 && countRows("bgm02_fm3.mus") == 1, "the file line was replaced in place, not added to");
+        CHECK(countRows("playing") == 1 && tailIsShown(), "one status line, below everything else");
+        size_t rowsBefore = con.screen().size();
+
+        p->key('h'); refresh(*p);
+        CHECK(con.screen().size() == rowsBefore + 10 && countRows("hide this list") == 1 && tailIsShown(), "h: the list of the keys appears below, in place");
+        p->key('h'); refresh(*p);
+        CHECK(con.screen().size() == rowsBefore && countRows("hide this list") == 0 && tailIsShown(), "h again: it is gone and nothing is left behind");
+        for (int i = 0; i < 5; i++) { p->key('h'); refresh(*p); p->key('h'); refresh(*p); }
+        CHECK(con.screen().size() == rowsBefore && tailIsShown(), "toggling it ten times changes nothing");
+
+        // many files and keys: the screen never grows except by real messages, and always ends with what was drawn last
+        auto q = makePlayer({f1, f2, f3, s1, s2, fx1});
+        FakeConsole con2(79, 30); ScreenBlock sb2(con2); Lines shown2;
+        unsigned seed = 4242; auto rnd = [&]() { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+        const int keys[] = { ' ', 's', Player::kKeyLeft, Player::kKeyRight, Player::kKeyUp, Player::kKeyDown, '[', ']', 'l', 'h', 'h', '1', '2', '3', '0', 'k' };
+        bool ok = true; size_t maxRows = 0; long shownMessages = 0;
+        for (int step = 0; step < 3000 && ok; step++) {
+            if (rnd() % 12 == 0) q->key(keys[rnd() % (sizeof keys / sizeof keys[0])]);
+            pullBlocks(*q, 1 + (int)(rnd() % 40));
+            Lines m = q->takeMessages();
+            if (!m.empty()) { sb2.printAbove(m); shown2.clear(); shownMessages += (long)m.size(); }
+            Lines lines = q->screenLines(con2.width());
+            if (lines != shown2) { sb2.draw(lines); shown2 = lines; }
+            Lines v = con2.screen();
+            if (v.size() < shown2.size()) ok = false;
+            else for (size_t i = 0; i < shown2.size(); i++) if (v[v.size() - shown2.size() + i] != rtrim(shown2[i].substr(0, (size_t)con2.W - 1))) ok = false;
+            if (v.size() > maxRows) maxRows = v.size();
+        }
+        CHECK(ok, "3000 random steps: the last rows of the screen are always exactly the lines that were drawn last");
+        CHECK(maxRows <= 30 && con2.scrolls <= shownMessages + 20, "and the window scrolls only for real messages (and the first fill-up)");
     }
 
     // clean up

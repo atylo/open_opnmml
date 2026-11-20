@@ -25,26 +25,43 @@ Options are `-x value` (letter, space, value only: `-v 40`, not `-v volume=40`);
 
 ## The interactive player (`mmlplayer`)
 
-    mmlplayer PATH [PATH ...]       PATH = a .mus file, or a folder (every .mus file in it, by name; not its sub-folders)
-    mmlplayer --once PATH ...       play every song once and go on to the next file (default: songs loop for ever, like in the game)
+    mmlplayer PATH [PATH ...]       PATH = a .mus file, or a folder: every .mus file in it and in all the folders below it
+    mmlplayer --once PATH ...       start in "once" mode: every song plays once and the next file follows (default: "loop")
 
 | Key | Action |
 |---|---|
 | space | pause / continue (after a stop: play again) |
 | `s` | stop with the game's quick fade (about 0.26 s) |
-| `n` / `p` | next / previous file (fade, then switch; wraps round) |
-| `+` / `-` | louder / quieter (4 volume steps = about 0.9 dB per press) |
+| Left / Right arrow | previous / next file (fade, then switch; after the last file comes the first, and the other way round) |
+| Up / Down arrow | louder / quieter (4 volume steps = about 0.9 dB per press) |
+| `l` | switch between **loop** (songs repeat for ever, like the game) and **once** (every song plays once), also while playing |
 | `[` / `]` | slower / faster by 5 beats per minute (the song's own `t` commands change the tempo again) |
-| `A` ... `K` | switch that channel off / on (all channels are on again with the next file) |
-| `?` | list the keys;  `q` or Esc: quit |
+| `1` ... `9`, `0`, `K` | switch channel A ... I, J, K off / on (1 = A, 2 = B ... 9 = I, 0 = J); all channels are on again with the next file |
+| `h` | show / hide the list of the keys |
+| `q` or Esc | quit |
 
-The machine (PC-88, X1, MZ) comes from the file's `#machine` line, and each file is played from a fresh engine.  The status line shows
-`[number/count] name  machine  time/length of one pass  vol  tempo  channels  state`; in the channel list a letter is a channel that plays,
-`-` a channel without music (or one that has finished) and `.` a channel that you switched off.  A song that has no loop point (or ends with
-a fade-out) ends by itself in either mode, and the player goes on to the next file; after the last file the program ends.
+What the screen shows: three lines that are rewritten in place (nothing is added to the screen when the file changes or when something is pressed):
 
-The sound goes to the sound card through the Windows multimedia API (`audio_winmm.hpp`, waveOut, no extra libraries; the Makefile adds
-`-lwinmm`).  Everything else is in `player.cpp`, which has no operating-system code and is tested without a sound card (`verify/player_test.sh`).
+    Gate of steiner OPM+PSG -from Steins;Gate-
+    bgm01_opm.mus   X1   track 1 of 110
+    playing  0:08 / 1:17  loop  vol 32  tempo 76  ---DEF  h = controls
+
+The title (an empty line if the file has none), the file name with the machine and the place in the list, and the status line: the state (playing /
+paused / stopped), the time and the length of one pass, loop or once, the volume, the tempo and the channels, written with the letters A ... K of the
+music text: the letter of a channel that plays, `-` for a channel without music (or one that has finished), `.` for one that you switched off.  `h` adds
+the list of the keys below these lines, and `h` again takes it away.  Only a real message (a file with an error, a warning, the end of the playlist)
+is printed as an ordinary line, above the three lines.
+
+The machine (PC-88, X1, MZ) comes from the file's `#machine` line, and each file is played from a fresh engine.  In a folder the files come first (by
+name), then the sub-folders (by name), each in the same way; links to folders are not followed and folders more than 12 levels down are not searched.
+A song that has no loop point (or ends with a fade-out) ends by itself in either mode, and the player goes on to the next file; after the last file the
+program ends.  Switching to **once** while a song plays lets it finish the pass that is running and then end; switching back to **loop** before that
+keeps it going.
+
+The sound goes to the sound card through the Windows multimedia API (`audio_winmm.hpp`, waveOut, no extra libraries; the Makefile adds `-lwinmm`).
+The three lines are redrawn with plain Win32 console calls (`terminal_win.hpp`: it reads where the cursor is and moves it back up, so it keeps
+working when the window scrolls); the drawing logic itself is in `screen.hpp`.  Everything else is in `player.cpp`.  Only `audio_winmm.hpp` and
+`terminal_win.hpp` contain Windows code; the rest, with all the logic, is tested without a sound card or a real console (`verify/player_test.sh`).
 
 ## How it works
 
@@ -60,7 +77,7 @@ The sound goes to the sound card through the Windows multimedia API (`audio_winm
 | `chiptables.inc`, `tables.inc` | Lookup tables extracted from the original, each documented with its original address. |
 | `songlen.cpp` | Song length: a silent dry run of the sequencer that finds the end of the first pass, the loop start and the loop length. |
 | `mmlplay.cpp`, `mmltrace.cpp`, `mmldump.cpp`, `cli.hpp` | The command-line tools and their shared argument parser. |
-| `player.cpp/.hpp`, `audio_winmm.hpp`, `mmlplayer.cpp` | The interactive player: playlist, keys, status line and the sound hand-out (`player`); the Windows sound output (`audio_winmm.hpp`); the command line and keyboard (`mmlplayer.cpp`). |
+| `player.cpp/.hpp`, `screen.hpp`, `audio_winmm.hpp`, `terminal_win.hpp`, `mmlplayer.cpp` | The interactive player: playlist, keys, screen lines and the sound hand-out (`player`); the block of lines that is redrawn in place (`screen.hpp`); the Windows sound output (`audio_winmm.hpp`) and console (`terminal_win.hpp`); the command line and keyboard (`mmlplayer.cpp`). |
 
 Function names in comments such as `[sub_1001A6E0]` are the names of the original functions (the number is their address
 in the original), so any function can be compared against the original code. The chip keeps the original's flat state layout (same dword numbers) on purpose; the names
@@ -85,11 +102,13 @@ Everything below was compared with the ORIGINAL plugin DLL by running its own co
 * **The public release of a song** (`bgm01_x1`): same notes, timing and tuning; it differs only by post-production (louder, a gentle equaliser,
   no DC offset, a fade-out).  With a gain, an equaliser and a DC filter applied to our render the level and tone agree within 0.2 dB.
 * Sanitizer runs (AddressSanitizer/UBSan) and corrupted-input tests: no crashes.
-* **Interactive player** (`player.cpp`, `verify/player_test.sh`, no sound card needed): the sound it hands out is sample-identical to the engine driven
-  directly and to `mmlplay -t`, whatever chunk size it is pulled in and through a fake sound device; every key (pause, volume, tempo, channels,
-  stop fade, next / previous, once / loop, bad files, folders) is checked against the engine given the same operation at the same frame; 103
-  checks, clean under AddressSanitizer/UBSan, and 14 deliberate breakages of the player are all caught.  The Windows sound output and the keyboard
-  code (about 150 lines) were compiled for Windows but not run in the test environment.
+* **Interactive player** (`player.cpp`, `screen.hpp`, `verify/player_test.sh`, no sound card or console needed): the sound it hands out is
+  sample-identical to the engine driven directly and to `mmlplay -t`, whatever chunk size it is pulled in and through a fake sound device; every key
+  (pause, volume, tempo, channels, stop fade, next / previous, once / loop switch, help) is checked against the engine given the same operation at the
+  same frame; bad files, folders and sub-folders, the clock (also past 48 seconds), and the three-line screen are tested, the screen against a
+  simulated console that scrolls like a real one.  185 checks, clean under AddressSanitizer/UBSan, also run as a 32-bit program (where `long` has 32
+  bits like on Windows), and 40 deliberate breakages of the player and of the screen code are all caught.  The Windows sound output and the Windows
+  console code (about 100 lines in all) were compiled for Windows but not run in the test environment.
 
 ## Differences from the original
 

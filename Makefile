@@ -19,7 +19,7 @@ mmltrace: mmltrace.cpp seq.cpp mmlcomp.cpp cli.hpp seq.hpp mmlcomp.hpp tables.in
 mmldump: mmldump.cpp mmlcomp.cpp seq.cpp songlen.cpp cli.hpp mmlcomp.hpp seq.hpp songlen.hpp tables.inc
 	$(CXX) $(CXXFLAGS) -o $@ mmldump.cpp mmlcomp.cpp seq.cpp songlen.cpp
 
-mmlplayer: mmlplayer.cpp player.cpp player.hpp audio_winmm.hpp mixer.cpp opx4.cpp seq.cpp mmlcomp.cpp songlen.cpp mixer.hpp opx4.hpp seq.hpp mmlcomp.hpp songlen.hpp chiptables.inc tables.inc
+mmlplayer: mmlplayer.cpp player.cpp player.hpp audio_winmm.hpp screen.hpp terminal_win.hpp mixer.cpp opx4.cpp seq.cpp mmlcomp.cpp songlen.cpp mixer.hpp opx4.hpp seq.hpp mmlcomp.hpp songlen.hpp chiptables.inc tables.inc
 	$(CXX) $(CXXFLAGS) -o $@ mmlplayer.cpp player.cpp mixer.cpp opx4.cpp seq.cpp mmlcomp.cpp songlen.cpp $(PLAYER_LIBS)
 
 clean:

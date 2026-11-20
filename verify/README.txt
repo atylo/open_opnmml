@@ -79,15 +79,25 @@ songlen_diff.py    runs the DLL's own step function (no audio) tick by tick and 
 
 Interactive player (no DLL needed)
 ----------------------------------
-player_test.cpp    tests the player's core (player.cpp) without a sound card.  The sound it hands out is compared sample for sample with the
-                   engine driven directly (fresh Mixer, device PC88, volume 32, song 0 in slot 3, blocks of 128 frames) - in six chunk-size patterns
-                   (1 frame ... 50000) and through a fake sound device - and every key (pause, volume, tempo, channel mute, stop fade, next/previous,
-                   once/loop) is checked by giving the engine the same operation at the same frame.  Also: the length of the stop fade (measured
-                   on the engine, 0.2-0.35 s), the end of songs and the automatic advance, playlist building from files and folders, files that cannot
-                   be played, the status line, and 3 minutes of random keys.  103 checks.
-player_test.sh     builds and runs it (SANITIZE=1 adds AddressSanitizer/UBSan; --no-mutants skips the next part), then the MUTATION TESTS: it breaks
-                   a copy of player.cpp in 14 ways with sed (pause ignored, unused part of a block thrown away, wrong volume step, stop cuts instead
-                   of fading, a channel cannot be switched back on, no automatic advance, previous does not wrap, --once ignored, folder order
-                   case-sensitive, no volume limit, n twice does not skip, long names not shortened, a bad file stops the search, s during the tail
-                   does not cancel the advance); every one must make the test fail.  All 14 are caught.
+player_test.cpp    tests the player's core (player.cpp) and the screen block (screen.hpp) without a sound card or a console.  The sound it hands
+                   out is compared sample for sample with the engine driven directly (fresh Mixer, device PC88, volume 32, song 0 in slot 3, blocks
+                   of 128 frames) - in six chunk-size patterns (1 frame ... 50000) and through a fake sound device - and every key (pause, volume
+                   on Up/Down, tempo, channel mute on the number keys, stop fade, next/previous on Left/Right, once/loop switch) is checked by giving
+                   the engine the same operation at the same frame.  Also: the length of the stop fade (measured on the engine, 0.2-0.35 s), the
+                   end of songs and the automatic advance, playlist building from files and folders (order, links, depth limit), files that cannot be
+                   played, the screen lines and the help (h), the clock after 49 and 61 seconds, and 3 minutes of random keys.  The screen block is
+                   tested against a simulated console (cursor, scrolling at the bottom): drawn once and redrawn in place 50 times, the list of the
+                   keys appearing and disappearing, messages printed above it, long lines, the end - and the player's real screen lines through
+                   file changes, an error and the help toggle, 3000 random steps.  185 checks.
+player_test.sh     builds and runs it as a 64-bit program (SANITIZE=1 adds AddressSanitizer/UBSan) and as a 32-bit program (-m32: `long` has 32
+                   bits there, like on Windows; M32=0 skips it), then the MUTATION TESTS: it breaks a copy of player.cpp in 32 ways and of screen.hpp
+                   in 8 ways with sed (pause ignored, unused part of a block thrown away, wrong volume step, no volume limit, Up and Down swapped,
+                   + still changing the volume, the clock calculated in 32 bits or in a long, stop cutting instead of fading, a channel that cannot
+                   be switched on again, keys 0 and k mapped wrongly, a missing channel muted anyway, keys shown instead of letters, help on the
+                   wrong key or never hiding, no automatic advance, Left not wrapping, Right twice not skipping, the start mode once ignored, l not
+                   changing the running song, a bad file stopping the search, s in the tail not cancelling the advance, a "fading" state, the hint
+                   never dropped, the path / a track number / no title in the header, case-sensitive folder order, sub-folders not searched, no
+                   depth limit, links followed; the screen block overwriting nothing, not wiping what is no longer used, not cutting or padding
+                   lines, using the last column, not erasing for messages, not ending on a new line); every one must make the test fail.  All 40
+                   are caught.  (The one with a long is only visible in the 32-bit program.)
                    Besides this, the first 6 s of five songs (PC-88, X1, MZ) played by the player were compared with `mmlplay -t 6`: identical.
